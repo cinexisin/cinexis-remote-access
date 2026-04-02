@@ -1,0 +1,32 @@
+#include <tunables/global>
+
+profile cinexis_remote flags=(attach_disconnected,mediate_deleted) {
+  #include <abstractions/base>
+
+  # Capabilities required
+  capability chown,
+  capability dac_override,
+  capability fowner,
+  capability kill,
+  capability net_bind_service,
+  capability setgid,
+  capability setuid,
+  capability sys_admin,
+
+  # Networking
+  network inet  stream,
+  network inet  dgram,
+  network inet6 stream,
+  network inet6 dgram,
+  network netlink raw,
+
+  # Allow s6-overlay init system — all paths it uses
+  /** mrwklix,
+
+  # Deny sensitive host paths
+  deny /proc/sysrq-trigger rw,
+  deny /proc/mem rw,
+  deny /proc/kmem rw,
+  deny /proc/kcore rw,
+  deny /sys/firmware/** rw,
+}
