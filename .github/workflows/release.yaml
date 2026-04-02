@@ -1,0 +1,33 @@
+name: Validate Add-on
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+    paths-ignore:
+      - 'cinexis_remote/**'
+      - '.github/workflows/build.yaml'
+
+jobs:
+  validate:
+    name: Validate config
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check config.yaml version format
+        run: |
+          VERSION=$(grep '^version:' cinexis_remote/config.yaml | awk '{print $2}' | tr -d '"')
+          echo "Version: $VERSION"
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid version format: $VERSION"
+            exit 1
+          fi
+
+      - name: Check required files exist
+        run: |
+          for f in cinexis_remote/config.yaml cinexis_remote/Dockerfile cinexis_remote/build.yaml cinexis_remote/apparmor.txt; do
+            [ -f "$f" ] || { echo "Missing: $f"; exit 1; }
+          done
+          echo "All required files present"
