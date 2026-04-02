@@ -12,8 +12,8 @@ SECRET_FILE="${STORAGE_DIR}/device_secret"
 FRPC_CONFIG="${STORAGE_DIR}/frpc.toml"
 HEARTBEAT_INTERVAL=300  # 5 minutes
 LOG_PREFIX="[Cinexis]"
-NAME_PREFIX="${NAME_PREFIX:-}"  # Set via add-on options (e.g. "smithhome")
-ASSIGNED_NAME=""               # Full subdomain returned by API after registration
+CUSTOM_NAME="${CUSTOM_NAME:-}"  # Set via add-on options (e.g. "stargate42")
+ASSIGNED_NAME=""               # Confirmed subdomain returned by API after registration
 
 log()  { echo "${LOG_PREFIX} $*"; }
 warn() { echo "${LOG_PREFIX} ⚠️  $*"; }
@@ -57,7 +57,7 @@ get_ha_name() {
 register_node() {
     log "Registering node ${NODE_ID} (${HA_NAME}) with Cinexis Cloud..." >&2
     local body="{\"node_id\":\"${NODE_ID}\",\"device_secret\":\"${DEVICE_SECRET}\",\"ha_name\":\"${HA_NAME}\""
-    [ -n "${NAME_PREFIX}" ] && body="${body},\"custom_name\":\"${NAME_PREFIX}\""
+    [ -n "${CUSTOM_NAME}" ] && body="${body},\"custom_name\":\"${CUSTOM_NAME}\""
     body="${body}}"
 
     local response
