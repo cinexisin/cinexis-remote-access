@@ -53,17 +53,17 @@ get_ha_name() {
 
 # ── Register with Cinexis API ──────────────────────────────────────────────────
 register_node() {
-    log "Registering node ${NODE_ID} (${HA_NAME}) with Cinexis Cloud..."
+    log "Registering node ${NODE_ID} (${HA_NAME}) with Cinexis Cloud..." >&2
     local response
     response=$(curl -sf --max-time 15 \
         -X POST "${API}/p2p/register" \
         -H "Content-Type: application/json" \
         -d "{\"node_id\":\"${NODE_ID}\",\"device_secret\":\"${DEVICE_SECRET}\",\"ha_name\":\"${HA_NAME}\"}" \
-        2>/dev/null) || { err "Failed to reach Cinexis API. Check internet connection."; return 1; }
+        2>/dev/null) || { err "Failed to reach Cinexis API. Check internet connection." >&2; return 1; }
 
     local status
     status=$(echo "${response}" | jq -r '.status // "error"')
-    log "Registration status: ${status}"
+    log "Registration status: ${status}" >&2
     echo "${status}"
 }
 
