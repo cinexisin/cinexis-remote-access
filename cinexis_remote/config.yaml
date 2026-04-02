@@ -17,5 +17,4 @@ options:
   log_level: info
 schema:
   log_level: list(trace|debug|info|warning|error)
-image: "ghcr.io/cinexisin/cinexis-remote-{arch}"
 url: "https://cinexis.cloud"
