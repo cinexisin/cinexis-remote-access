@@ -1,0 +1,21 @@
+name: "Cinexis Remote Access"
+description: "Secure remote access to your Home Assistant via Cinexis Cloud. No port forwarding required."
+version: "1.0.0"
+slug: "cinexis_remote"
+init: false
+arch:
+  - amd64
+  - aarch64
+  - armv7
+homeassistant: "2023.1.0"
+startup: services
+boot: auto
+map:
+  - type: share
+    read_only: false
+options:
+  log_level: info
+schema:
+  log_level: list(trace|debug|info|warning|error)
+image: "ghcr.io/cinexisin/cinexis-remote-{arch}"
+url: "https://cinexis.cloud"
