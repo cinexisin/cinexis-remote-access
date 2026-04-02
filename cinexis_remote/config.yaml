@@ -1,6 +1,6 @@
 name: "Cinexis Remote Access"
 description: "Secure remote access to your Home Assistant via Cinexis Cloud. No port forwarding required."
-version: "1.4.0"
+version: "1.5.0"
 slug: "cinexis_remote"
 init: false
 arch:
@@ -16,10 +16,8 @@ map:
     read_only: false
 options:
   log_level: info
-  custom_name: ""
-  access_token: ""
+  name_prefix: ""
 schema:
   log_level: list(trace|debug|info|warning|error)
-  custom_name: str
-  access_token: str
+  name_prefix: str
 url: "https://cinexis.cloud"
