@@ -120,6 +120,8 @@ wait_for_approval() {
 
 # ── Write frpc config ──────────────────────────────────────────────────────────
 write_frpc_config() {
+    # Use first 8 chars of node_id as short subdomain
+    SHORT_ID="${NODE_ID:0:8}"
     cat > "${FRPC_CONFIG}" << FRPCEOF
 serverAddr = "${FRPS_HOST}"
 serverPort = ${FRPS_PORT}
@@ -136,9 +138,9 @@ name = "${NODE_ID}"
 type = "http"
 localIP = "127.0.0.1"
 localPort = 8099
-customDomains = ["${NODE_ID}.ha1.cinexis.cloud"]
+customDomains = ["${SHORT_ID}.ha1.cinexis.cloud"]
 FRPCEOF
-    log "frpc config written"
+    log "frpc config written (short ID: ${SHORT_ID})"
 }
 
 # ── Kill frpc ──────────────────────────────────────────────────────────────────
@@ -175,7 +177,7 @@ start_frpc() {
         return 1
     fi
     log "✅ Tunnel established!"
-    log "🌐 Your HA URL: https://${NODE_ID}.ha1.cinexis.cloud"
+    log "🌐 Your HA URL: https://${NODE_ID:0:8}.ha1.cinexis.cloud"
 }
 
 # ── Heartbeat loop ─────────────────────────────────────────────────────────────
@@ -232,7 +234,7 @@ main() {
     start_frpc
 
     log "Cinexis Remote Access is running."
-    log "Your HA is accessible at: https://${NODE_ID}.ha1.cinexis.cloud"
+    log "Your HA is accessible at: https://${NODE_ID:0:8}.ha1.cinexis.cloud"
 
     # Start heartbeat in background
     heartbeat_loop &
