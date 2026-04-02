@@ -216,7 +216,7 @@ main() {
     get_ha_name
 
     local status
-    status=$(register_node) || { err "Registration failed. Retrying in 60s..."; sleep 60; exec "$0"; }
+    status=$(register_node) || { err "Registration failed. Retrying in 60s..."; sleep 60; exec /usr/bin/cinexis-entrypoint.sh; }
 
     if [ "${status}" = "pending" ]; then
         wait_for_approval
@@ -244,7 +244,7 @@ main() {
     err "frpc exited unexpectedly. Restarting in 30s..."
     kill "${HEARTBEAT_PID:-}" 2>/dev/null || true
     sleep 30
-    exec "$0"
+    exec /usr/bin/cinexis-entrypoint.sh
 }
 
 main "$@"

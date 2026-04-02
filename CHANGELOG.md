@@ -5,6 +5,15 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.0.3] - 2026-04-02
+
+### Fixed
+- Removed custom AppArmor profile — was blocking s6-overlay-suexec and causing startup failure
+- Using Docker default AppArmor profile (apparmor: true) which still gives security rating 6
+- Replace `exec "$0"` with full script path to avoid resolving to `/init` under s6
+
+---
+
 ## [1.0.2] - 2026-04-02
 
 ### Fixed
