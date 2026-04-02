@@ -1,0 +1,75 @@
+#include <tunables/global>
+
+profile cinexis_remote flags=(attach_disconnected,mediate_deleted) {
+  #include <abstractions/base>
+
+  # Capabilities
+  capability chown,
+  capability dac_override,
+  capability fowner,
+  capability kill,
+  capability net_bind_service,
+  capability setgid,
+  capability setuid,
+
+  # Network — frpc + nginx need full network access
+  network inet stream,
+  network inet dgram,
+  network inet6 stream,
+  network inet6 dgram,
+
+  # Binaries
+  /usr/bin/cinexis-entrypoint.sh    rix,
+  /usr/local/bin/frpc               ix,
+  /usr/sbin/nginx                   ix,
+  /usr/bin/curl                     ix,
+  /usr/bin/jq                       ix,
+  /usr/bin/openssl                  ix,
+  /usr/bin/bash                     ix,
+  /bin/bash                         ix,
+  /bin/sh                           ix,
+  /usr/bin/env                      ix,
+  /usr/bin/sleep                    ix,
+  /usr/bin/kill                     ix,
+
+  # Data storage
+  /share/cinexis/                   rw,
+  /share/cinexis/**                 rw,
+
+  # Nginx runtime
+  /var/log/nginx/                   rw,
+  /var/log/nginx/**                 rw,
+  /var/lib/nginx/                   rw,
+  /var/lib/nginx/**                 rw,
+  /run/nginx/                       rw,
+  /run/nginx/**                     rw,
+  /tmp/                             rw,
+  /tmp/**                           rw,
+
+  # frpc runtime
+  /run/frpc/                        rw,
+  /run/frpc/**                      rw,
+
+  # System reads
+  /proc/sys/kernel/random/uuid      r,
+  /proc/@{pid}/                     r,
+  /proc/@{pid}/**                   r,
+  /etc/ssl/certs/                   r,
+  /etc/ssl/certs/**                 r,
+  /etc/nginx/                       r,
+  /etc/nginx/**                     r,
+  /usr/share/nginx/                 r,
+  /usr/share/nginx/**               r,
+  /lib/                             r,
+  /lib/**                           r,
+  /usr/lib/                         r,
+  /usr/lib/**                       r,
+  /usr/share/ca-certificates/       r,
+  /usr/share/ca-certificates/**     r,
+
+  # s6 / init
+  /run/s6/                          rw,
+  /run/s6/**                        rw,
+  /var/run/                         rw,
+  /var/run/**                       rw,
+}

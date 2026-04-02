@@ -1,6 +1,6 @@
 name: "Cinexis Remote Access"
 description: "Secure remote access to your Home Assistant via Cinexis Cloud. No port forwarding required."
-version: "1.0.0"
+version: "1.0.1"
 slug: "cinexis_remote"
 init: false
 arch:
@@ -10,6 +10,7 @@ arch:
 homeassistant: "2023.1.0"
 startup: services
 boot: auto
+apparmor: true
 map:
   - type: share
     read_only: false
