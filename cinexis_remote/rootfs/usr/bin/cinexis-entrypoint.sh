@@ -194,10 +194,13 @@ heartbeat_loop() {
 }
 
 # ── Cleanup on exit ────────────────────────────────────────────────────────────
+CLEAN_SHUTDOWN=false
 cleanup() {
+    CLEAN_SHUTDOWN=true
     log "Shutting down..."
     kill_frpc
     [ -n "${NGINX_PID:-}" ] && kill "${NGINX_PID}" 2>/dev/null || true
+    [ -n "${HEARTBEAT_PID:-}" ] && kill "${HEARTBEAT_PID}" 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
 
@@ -237,8 +240,9 @@ main() {
 
     # Wait for frpc to exit
     wait "${FRPC_PID}" || true
+    [ "${CLEAN_SHUTDOWN}" = "true" ] && exit 0
     err "frpc exited unexpectedly. Restarting in 30s..."
-    kill "${HEARTBEAT_PID}" 2>/dev/null || true
+    kill "${HEARTBEAT_PID:-}" 2>/dev/null || true
     sleep 30
     exec "$0"
 }

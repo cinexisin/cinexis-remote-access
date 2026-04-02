@@ -5,6 +5,15 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.0.2] - 2026-04-02
+
+### Fixed
+- AppArmor profile now allows s6/init system paths — no more `/init: Permission denied` on shutdown
+- Clean HA shutdown no longer triggers unexpected restart loop
+- Heartbeat process properly killed on shutdown
+
+---
+
 ## [1.0.1] - 2026-04-02
 
 ### Security

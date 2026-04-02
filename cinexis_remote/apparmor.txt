@@ -67,9 +67,17 @@ profile cinexis_remote flags=(attach_disconnected,mediate_deleted) {
   /usr/share/ca-certificates/       r,
   /usr/share/ca-certificates/**     r,
 
-  # s6 / init
+  # s6 / init system
+  /init                             rix,
+  /init/**                          rix,
   /run/s6/                          rw,
   /run/s6/**                        rw,
+  /run/s6-rc*/                      rw,
+  /run/s6-rc*/**                    rw,
   /var/run/                         rw,
   /var/run/**                       rw,
+  /command/                         rix,
+  /command/**                       rix,
+  /package/                         r,
+  /package/**                       r,
 }
