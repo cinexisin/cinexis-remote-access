@@ -12,8 +12,9 @@ SECRET_FILE="${STORAGE_DIR}/device_secret"
 FRPC_CONFIG="${STORAGE_DIR}/frpc.toml"
 HEARTBEAT_INTERVAL=300  # 5 minutes
 LOG_PREFIX="[Cinexis]"
-CUSTOM_NAME="${CUSTOM_NAME:-}"  # Set via add-on options (e.g. "stargate42")
-ASSIGNED_NAME=""               # Confirmed subdomain returned by API after registration
+CUSTOM_NAME="${CUSTOM_NAME:-}"      # Set via add-on options (e.g. "stargate42")
+ACCESS_TOKEN="${ACCESS_TOKEN:-}"    # Pre-auth gate token — required before HA login page
+ASSIGNED_NAME=""                   # Confirmed subdomain returned by API after registration
 
 log()  { echo "${LOG_PREFIX} $*"; }
 warn() { echo "${LOG_PREFIX} ⚠️  $*"; }
@@ -245,8 +246,19 @@ main() {
     start_nginx
     start_frpc
 
+    # Register access token with gate if configured
+    if [ -n "${ACCESS_TOKEN}" ]; then
+        log "Registering access gate token..."
+        curl -sf --max-time 10 \
+            -X POST "${API}/p2p/set-access-token" \
+            -H "Content-Type: application/json" \
+            -d "{\"node_id\":\"${NODE_ID}\",\"device_secret\":\"${DEVICE_SECRET}\",\"access_token\":\"${ACCESS_TOKEN}\"}" \
+            2>/dev/null && log "✅ Access gate token registered" || warn "Failed to register access token"
+    fi
+
     log "Cinexis Remote Access is running."
     log "Your HA is accessible at: https://${SUBDOMAIN}.ha1.cinexis.cloud"
+    [ -n "${ACCESS_TOKEN}" ] && log "🔐 Access gate is ENABLED — token required before HA login"
 
     # Start heartbeat in background
     heartbeat_loop &
