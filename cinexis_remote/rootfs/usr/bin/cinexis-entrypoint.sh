@@ -12,8 +12,8 @@ SECRET_FILE="${STORAGE_DIR}/device_secret"
 FRPC_CONFIG="${STORAGE_DIR}/frpc.toml"
 HEARTBEAT_INTERVAL=300  # 5 minutes
 LOG_PREFIX="[Cinexis]"
-DESIRED_NAME="${CUSTOM_NAME:-}"  # Set via add-on options
-ASSIGNED_NAME=""                 # Resolved after registration
+NAME_PREFIX="${NAME_PREFIX:-}"  # Set via add-on options (e.g. "smithhome")
+ASSIGNED_NAME=""               # Full subdomain returned by API after registration
 
 log()  { echo "${LOG_PREFIX} $*"; }
 warn() { echo "${LOG_PREFIX} ⚠️  $*"; }
@@ -53,33 +53,11 @@ get_ha_name() {
         jq -r '.location_name // "Home Assistant"' 2>/dev/null || echo "Home Assistant")
 }
 
-# ── Check name availability ────────────────────────────────────────────────────
-check_name_availability() {
-    local name="$1"
-    local response
-    response=$(curl -sf --max-time 10 \
-        "${API}/p2p/check-name?name=${name}" 2>/dev/null) || return 1
-    echo "${response}" | jq -r '.available // "false"'
-}
-
 # ── Register with Cinexis API ──────────────────────────────────────────────────
 register_node() {
-    # Resolve desired name before registering
-    if [ -n "${DESIRED_NAME}" ]; then
-        log "Checking availability of '${DESIRED_NAME}'..." >&2
-        local avail
-        avail=$(check_name_availability "${DESIRED_NAME}") || avail="false"
-        if [ "${avail}" = "true" ]; then
-            log "✅ Name '${DESIRED_NAME}' is available!" >&2
-        else
-            warn "Name '${DESIRED_NAME}' is taken or invalid. Will use short ID instead." >&2
-            DESIRED_NAME=""
-        fi
-    fi
-
     log "Registering node ${NODE_ID} (${HA_NAME}) with Cinexis Cloud..." >&2
     local body="{\"node_id\":\"${NODE_ID}\",\"device_secret\":\"${DEVICE_SECRET}\",\"ha_name\":\"${HA_NAME}\""
-    [ -n "${DESIRED_NAME}" ] && body="${body},\"custom_name\":\"${DESIRED_NAME}\""
+    [ -n "${NAME_PREFIX}" ] && body="${body},\"custom_name\":\"${NAME_PREFIX}\""
     body="${body}}"
 
     local response
@@ -93,7 +71,7 @@ register_node() {
     status=$(echo "${response}" | jq -r '.status // "error"')
     ASSIGNED_NAME=$(echo "${response}" | jq -r '.custom_name // ""')
     log "Registration status: ${status}" >&2
-    [ -n "${ASSIGNED_NAME}" ] && log "Assigned name: ${ASSIGNED_NAME}" >&2
+    [ -n "${ASSIGNED_NAME}" ] && log "Your subdomain: ${ASSIGNED_NAME}.ha1.cinexis.cloud" >&2
     echo "${status}"
 }
 
