@@ -370,6 +370,11 @@ main() {
     log "=========================================="
 
     ensure_storage
+
+    # Start ingress UI immediately — HA checks ingress port on startup
+    # Must be first so the web UI is available before any network calls
+    start_ingress
+
     ensure_node_id
     ensure_secret
     ensure_short_id
@@ -390,9 +395,6 @@ main() {
         active)   ;;
         *)        err "Unexpected status: ${status}"; sleep 30; exec /usr/bin/cinexis-entrypoint.sh ;;
     esac
-
-    # Start ingress UI (always — provides OTP setup + voice device management)
-    start_ingress
 
     # Start Alexa handler (before FRP) so it's ready when tunnel connects
     start_alexa_handler

@@ -86,13 +86,18 @@ def cinexis_post(path, payload):
         return json.loads(resp.read())
 
 # ── HTML helpers ──────────────────────────────────────────────────────────────
-def page(title, body, extra_head=""):
+def page(title, body, base_path="/", extra_head=""):
+    # HA ingress strips its prefix before forwarding, but the browser still
+    # sees the full /api/hassio_ingress/TOKEN/ URL.  Setting <base> makes all
+    # relative links (form actions, fetch paths) resolve correctly.
+    base_tag = f'<base href="{base_path}">' if base_path != "/" else ""
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{title} — Cinexis</title>
+{base_tag}
 {extra_head}
 <style>
 *{{box-sizing:border-box;margin:0;padding:0}}
@@ -175,7 +180,7 @@ def render_license_section(msg="", msg_type=""):
   <p style="font-size:.83rem;color:#64748b;margin-top:8px">
     Alexa Smart Home is enabled. Say <em>"Alexa, discover devices"</em> to sync.
   </p>
-  <form method="post" action="/license/clear" style="margin-top:14px">
+  <form method="post" action="license/clear" style="margin-top:14px">
     <button type="submit" class="btn btn-danger btn-sm">Clear License (re-activate)</button>
   </form>
   {msg_html}
@@ -189,7 +194,7 @@ def render_license_section(msg="", msg_type=""):
     Enter your email registered with <strong>cinexis.cloud</strong> to activate Alexa Smart Home.
   </p>
 
-  <form method="post" action="/license/send-otp" id="otpRequestForm">
+  <form method="post" action="license/send-otp" id="otpRequestForm">
     <label>Email (registered with cinexis.cloud)</label>
     <input type="email" name="email" id="emailInput" placeholder="you@example.com" required autocomplete="email">
     <div style="margin-top:12px;display:flex;gap:8px;align-items:center">
@@ -198,7 +203,7 @@ def render_license_section(msg="", msg_type=""):
     </div>
   </form>
 
-  <form method="post" action="/license/verify-otp" style="margin-top:20px;padding-top:20px;border-top:1px solid #2d3748">
+  <form method="post" action="license/verify-otp" style="margin-top:20px;padding-top:20px;border-top:1px solid #2d3748">
     <label>OTP (received via email)</label>
     <input type="text" name="otp" placeholder="123456" maxlength="6" pattern="[0-9]{{6}}" inputmode="numeric">
     <input type="hidden" name="email" id="verifyEmail">
@@ -329,7 +334,7 @@ def render_voice_section(msg="", msg_type="", active_platform="alexa"):
 </div>
 <script>
 function toggleDevice(platform, entityId, enabled) {{
-  fetch('/voice/toggle', {{
+  fetch('voice/toggle', {{
     method: 'POST',
     headers: {{'Content-Type':'application/json'}},
     body: JSON.stringify({{platform, entity_id: entityId, enabled}})
@@ -346,7 +351,7 @@ function bulkToggle(platform, domain, enabled) {{
     if(!cb) return;
     cb.checked = enabled;
     var eid = row.querySelector('td:nth-child(2)').textContent.trim();
-    fetch('/voice/toggle', {{
+    fetch('voice/toggle', {{
       method:'POST',
       headers:{{'Content-Type':'application/json'}},
       body: JSON.stringify({{platform, entity_id: eid, enabled}})
@@ -387,9 +392,17 @@ class IngressHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def redirect(self, location):
+    def ingress_base(self):
+        """Return the HA ingress base path with trailing slash, e.g. /api/hassio_ingress/TOKEN/"""
+        base = self.headers.get("X-Ingress-Path", "")
+        if base and not base.endswith("/"):
+            base += "/"
+        return base or "/"
+
+    def redirect_home(self):
+        base = self.ingress_base()
         self.send_response(302)
-        self.send_header("Location", location)
+        self.send_header("Location", base)
         self.end_headers()
 
     def read_body(self):
@@ -402,26 +415,27 @@ class IngressHandler(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = self.path.split("?")[0]
+        base = self.ingress_base()
 
         if path in ("/", "/index.html"):
             lic = render_license_section()
             voice = render_voice_section()
-            self.send_html(200, page("Cinexis Setup", lic + voice))
+            self.send_html(200, page("Cinexis Setup", lic + voice, base_path=base))
         elif path == "/health":
             self.send_json(200, {"ok": True})
         else:
-            self.send_html(404, page("Not Found", "<p>Page not found.</p>"))
+            self.send_html(404, page("Not Found", "<p>Page not found.</p>", base_path=base))
 
     def do_POST(self):
         path = self.path.split("?")[0]
-        ct = self.headers.get("Content-Type", "")
+        base = self.ingress_base()
 
         if path == "/license/send-otp":
             form = self.parse_form()
             email = (form.get("email") or "").strip()
             if not email:
                 body = render_license_section("Please enter a valid email.", "err") + render_voice_section()
-                self.send_html(400, page("Cinexis Setup", body))
+                self.send_html(400, page("Cinexis Setup", body, base_path=base))
                 return
             try:
                 resp = cinexis_post("/api/node/otp-request", {"email": email})
@@ -440,7 +454,7 @@ class IngressHandler(http.server.BaseHTTPRequestHandler):
                 msg = f"Network error: {e}"
                 mtype = "err"
             body = render_license_section(msg, mtype) + render_voice_section()
-            self.send_html(200, page("Cinexis Setup", body))
+            self.send_html(200, page("Cinexis Setup", body, base_path=base))
 
         elif path == "/license/verify-otp":
             form = self.parse_form()
@@ -448,7 +462,7 @@ class IngressHandler(http.server.BaseHTTPRequestHandler):
             otp   = (form.get("otp") or "").strip()
             if not email or not otp:
                 body = render_license_section("Email and OTP are required.", "err") + render_voice_section()
-                self.send_html(400, page("Cinexis Setup", body))
+                self.send_html(400, page("Cinexis Setup", body, base_path=base))
                 return
             try:
                 resp = cinexis_post("/api/node/otp-verify", {"email": email, "otp": otp})
@@ -459,7 +473,7 @@ class IngressHandler(http.server.BaseHTTPRequestHandler):
                         f.write(key)
                     log(f"License activated for {email}")
                     body = render_license_section("License activated! Alexa Smart Home is now enabled.", "ok") + render_voice_section()
-                    self.send_html(200, page("Cinexis Setup", body))
+                    self.send_html(200, page("Cinexis Setup", body, base_path=base))
                 else:
                     err = resp.get("error", "unknown")
                     msgs = {
@@ -470,10 +484,10 @@ class IngressHandler(http.server.BaseHTTPRequestHandler):
                         "no_license_found": "No active license found for this email. Visit cinexis.cloud to purchase.",
                     }
                     body = render_license_section(msgs.get(err, f"Verification failed: {err}"), "err") + render_voice_section()
-                    self.send_html(400, page("Cinexis Setup", body))
+                    self.send_html(400, page("Cinexis Setup", body, base_path=base))
             except Exception as e:
                 body = render_license_section(f"Network error: {e}", "err") + render_voice_section()
-                self.send_html(500, page("Cinexis Setup", body))
+                self.send_html(500, page("Cinexis Setup", body, base_path=base))
 
         elif path == "/license/clear":
             try:
@@ -481,7 +495,7 @@ class IngressHandler(http.server.BaseHTTPRequestHandler):
                 log("License cleared via ingress UI")
             except FileNotFoundError:
                 pass
-            self.redirect("/")
+            self.redirect_home()
 
         elif path == "/voice/toggle":
             try:
@@ -503,7 +517,7 @@ class IngressHandler(http.server.BaseHTTPRequestHandler):
                 self.send_json(500, {"ok": False, "error": str(e)})
 
         else:
-            self.send_html(404, page("Not Found", "<p>Not found.</p>"))
+            self.send_html(404, page("Not Found", "<p>Not found.</p>", base_path=base))
 
 
 class ThreadedHTTPServer(http.server.ThreadingHTTPServer):
