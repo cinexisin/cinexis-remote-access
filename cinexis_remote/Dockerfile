@@ -7,7 +7,8 @@ RUN apk add --no-cache \
     nginx \
     bash \
     openssl \
-    jq
+    jq \
+    python3
 
 # Install frpc binary based on arch
 ARG BUILD_ARCH
@@ -25,6 +26,8 @@ RUN ARCH="${BUILD_ARCH}" && \
 # Copy rootfs
 COPY rootfs /
 
-RUN chmod +x /usr/bin/cinexis-entrypoint.sh
+RUN chmod +x /usr/bin/cinexis-entrypoint.sh \
+              /usr/bin/cinexis-alexa.py \
+              /usr/bin/cinexis-ingress.py
 
 CMD ["/usr/bin/cinexis-entrypoint.sh"]
