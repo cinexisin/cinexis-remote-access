@@ -82,8 +82,16 @@ def cinexis_post(path, payload):
         headers={"Content-Type": "application/json"},
         method="POST"
     )
-    with urllib.request.urlopen(req, timeout=15) as resp:
-        return json.loads(resp.read())
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        # Parse JSON error body from API (e.g. 429 rate_limited, 400 invalid_otp)
+        raw = e.read()
+        try:
+            return json.loads(raw)
+        except Exception:
+            raise Exception(f"HTTP {e.code}: {e.reason}")
 
 # ── HTML helpers ──────────────────────────────────────────────────────────────
 def page(title, body, base_path="/", extra_head=""):
