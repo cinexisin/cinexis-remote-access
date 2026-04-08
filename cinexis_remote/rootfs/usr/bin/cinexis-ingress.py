@@ -20,9 +20,28 @@ PORT              = int(os.environ.get("INGRESS_PORT", "18082"))
 STORAGE_DIR       = "/share/cinexis"
 LICENSE_KEY_FILE  = f"{STORAGE_DIR}/license_key"
 EXCLUSIONS_FILE   = f"{STORAGE_DIR}/voice_exclusions.json"
-SUPERVISOR_TOKEN  = os.environ.get("SUPERVISOR_TOKEN", "")
 HA_BASE           = "http://supervisor/core"
 CINEXIS_API       = "https://cinexis.cloud"
+
+# s6-overlay stores container env vars in this directory
+_S6_ENV_DIR = "/var/run/s6/container_environment"
+
+def get_supervisor_token():
+    """Read SUPERVISOR_TOKEN dynamically — env may not be populated at startup."""
+    # 1. Standard env var (available after hassio_api/homeassistant_api granted)
+    token = os.environ.get("SUPERVISOR_TOKEN", "") or os.environ.get("HASSIO_TOKEN", "")
+    if token:
+        return token
+    # 2. s6-overlay container environment directory (set after init completes)
+    for name in ("SUPERVISOR_TOKEN", "HASSIO_TOKEN"):
+        try:
+            with open(os.path.join(_S6_ENV_DIR, name)) as f:
+                t = f.read().strip()
+                if t:
+                    return t
+        except Exception:
+            pass
+    return ""
 
 SUPPORTED_DOMAINS = {
     "light", "switch", "cover", "climate", "fan",
@@ -61,12 +80,14 @@ def save_exclusions(data):
         json.dump(data, f, indent=2)
 
 def ha_get_states():
-    if not SUPERVISOR_TOKEN:
+    token = get_supervisor_token()
+    if not token:
+        log("HA states fetch: SUPERVISOR_TOKEN not available (hassio_api not granted yet?)")
         return []
     try:
         req = urllib.request.Request(
             f"{HA_BASE}/api/states",
-            headers={"Authorization": f"Bearer {SUPERVISOR_TOKEN}"}
+            headers={"Authorization": f"Bearer {token}"}
         )
         with urllib.request.urlopen(req, timeout=10) as resp:
             return json.loads(resp.read())
@@ -533,8 +554,8 @@ class ThreadedHTTPServer(http.server.ThreadingHTTPServer):
 
 
 def main():
-    if not SUPERVISOR_TOKEN:
-        log("WARNING: SUPERVISOR_TOKEN not set — HA device list will be empty")
+    token = get_supervisor_token()
+    log(f"SUPERVISOR_TOKEN: {'set (' + str(len(token)) + ' chars)' if token else 'NOT SET — HA states will be empty'}")
     server = ThreadedHTTPServer(("0.0.0.0", PORT), IngressHandler)
     log(f"Ingress UI listening on port {PORT}")
     server.serve_forever()

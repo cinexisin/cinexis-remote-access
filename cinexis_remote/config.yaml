@@ -1,6 +1,6 @@
 name: "Cinexis Remote Access"
 description: "Secure remote access and Alexa Smart Home for Home Assistant via Cinexis Cloud. No port forwarding required."
-version: "1.8.3"
+version: "1.8.4"
 slug: "cinexis_remote"
 init: false
 arch:
