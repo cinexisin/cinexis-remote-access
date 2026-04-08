@@ -14,10 +14,13 @@ FRPC_CONFIG="${STORAGE_DIR}/frpc.toml"
 HEARTBEAT_INTERVAL=300
 LOG_PREFIX="[Cinexis]"
 NAME_PREFIX="${NAME_PREFIX:-}"
+LICENSE_KEY="${LICENSE_KEY:-}"
 SUBDOMAIN=""
 NGINX_PID=""
 FRPC_PID=""
+ALEXA_PID=""
 CLEAN_SHUTDOWN=false
+ALEXA_PORT=18081
 
 log()  { echo "${LOG_PREFIX} $*"; }
 warn() { echo "${LOG_PREFIX} ⚠️  $*"; }
@@ -91,6 +94,16 @@ register_node() {
     local status
     status=$(echo "${response}" | jq -r '.status // "error"')
     log "Status: ${status}" >&2
+
+    # Also register with cinexis.cloud for Alexa routing (non-blocking — best effort)
+    # This links SUBDOMAIN (= ha_node_id) to the customer's license for Alexa directive routing.
+    local alexa_payload
+    alexa_payload="{\"node_id\":\"${NODE_ID}\",\"ha_node_id\":\"${SUBDOMAIN}\",\"device_secret\":\"${DEVICE_SECRET}\",\"ha_name\":\"${HA_NAME}\""
+    [ -n "${LICENSE_KEY}" ] && alexa_payload="${alexa_payload},\"license_key\":\"${LICENSE_KEY}\""
+    alexa_payload="${alexa_payload}}"
+    curl -sf --max-time 10 -X POST "https://cinexis.cloud/api/node/register" \
+        -H "Content-Type: application/json" -d "${alexa_payload}" > /dev/null 2>&1 || true
+
     echo "${status}"
 }
 
@@ -158,13 +171,25 @@ token = "${FRP_TOKEN}"
 [log]
 level = "info"
 
+# HA remote access tunnel — https://${SUBDOMAIN}.ha1.cinexis.cloud
 [[proxies]]
 name = "${NODE_ID}"
 type = "http"
 localIP = "127.0.0.1"
 localPort = 8099
 customDomains = ["${SUBDOMAIN}.ha1.cinexis.cloud"]
+
+# Alexa Smart Home tunnel — https://${SUBDOMAIN}bot.ha1.cinexis.cloud
+# cinexis.cloud routes Alexa directives here via X-Cinexis-Secret
+[[proxies]]
+name = "${NODE_ID}-alexa"
+type = "http"
+localIP = "127.0.0.1"
+localPort = ${ALEXA_PORT}
+customDomains = ["${SUBDOMAIN}bot.ha1.cinexis.cloud"]
 FRPCEOF
+    log "HA URL   : https://${SUBDOMAIN}.ha1.cinexis.cloud"
+    log "Alexa URL: https://${SUBDOMAIN}bot.ha1.cinexis.cloud"
 }
 
 # ── Process management ─────────────────────────────────────────────────────────
@@ -202,20 +227,37 @@ heartbeat_loop() {
     done
 }
 
+# ── Start Alexa handler ────────────────────────────────────────────────────────
+start_alexa_handler() {
+    log "Starting Alexa Smart Home handler on port ${ALEXA_PORT}..."
+    ALEXA_HANDLER_PORT="${ALEXA_PORT}" python3 /usr/bin/cinexis-alexa.py &
+    ALEXA_PID=$!
+    sleep 1
+    if kill -0 "${ALEXA_PID}" 2>/dev/null; then
+        log "✅ Alexa handler running (pid ${ALEXA_PID})"
+        log "   Say 'Alexa, discover devices' after linking your account"
+    else
+        warn "Alexa handler failed to start — voice control will not work"
+        ALEXA_PID=""
+    fi
+}
+
 # ── Cleanup ────────────────────────────────────────────────────────────────────
 cleanup() {
     CLEAN_SHUTDOWN=true
     log "Shutting down..."
     kill_frpc
-    [ -n "${NGINX_PID}" ] && kill "${NGINX_PID}" 2>/dev/null || true
+    [ -n "${NGINX_PID}" ]      && kill "${NGINX_PID}"  2>/dev/null || true
     [ -n "${HEARTBEAT_PID:-}" ] && kill "${HEARTBEAT_PID}" 2>/dev/null || true
+    [ -n "${ALEXA_PID}" ]      && kill "${ALEXA_PID}"  2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 main() {
     log "=========================================="
-    log " Cinexis Remote Access v1.5.0"
+    log " Cinexis Remote Access v1.6.0"
+    log " + Alexa Smart Home Integration"
     log "=========================================="
 
     ensure_storage
@@ -224,7 +266,8 @@ main() {
     ensure_short_id
     get_ha_name
 
-    log "Your URL: https://${SUBDOMAIN}.ha1.cinexis.cloud"
+    log "HA URL   : https://${SUBDOMAIN}.ha1.cinexis.cloud"
+    log "Alexa URL: https://${SUBDOMAIN}bot.ha1.cinexis.cloud"
 
     local status
     status=$(register_node) || {
@@ -241,11 +284,15 @@ main() {
         *)        err "Unexpected status: ${status}"; sleep 30; exec /usr/bin/cinexis-entrypoint.sh ;;
     esac
 
+    # Start Alexa handler first (before FRP) so it's ready when tunnel connects
+    start_alexa_handler
+
     start_nginx
     start_frpc
 
     log "Cinexis Remote Access is running."
-    log "Access your HA at: https://${SUBDOMAIN}.ha1.cinexis.cloud"
+    log "🏠 HA access : https://${SUBDOMAIN}.ha1.cinexis.cloud"
+    log "🔊 Alexa     : link at cinexis.cloud — Alexa node ID: ${SUBDOMAIN}"
 
     heartbeat_loop &
     HEARTBEAT_PID=$!
