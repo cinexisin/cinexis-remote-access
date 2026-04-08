@@ -22,8 +22,10 @@ SUBDOMAIN=""
 NGINX_PID=""
 FRPC_PID=""
 ALEXA_PID=""
+INGRESS_PID=""
 CLEAN_SHUTDOWN=false
 ALEXA_PORT=18081
+INGRESS_PORT="${INGRESS_PORT:-18082}"
 
 log()  { echo "${LOG_PREFIX} $*"; }
 warn() { echo "${LOG_PREFIX} ⚠️  $*"; }
@@ -204,6 +206,8 @@ send_heartbeat() {
             kill "${ALEXA_PID}" 2>/dev/null || true
             ALEXA_PID=""
         fi
+        # Clear cached license so ingress UI shows re-activation form
+        rm -f "${LICENSE_KEY_FILE}"
         return 2
     fi
     return 0
@@ -308,6 +312,20 @@ heartbeat_loop() {
     done
 }
 
+# ── Start ingress UI ───────────────────────────────────────────────────────────
+start_ingress() {
+    log "Starting ingress UI on port ${INGRESS_PORT}..."
+    INGRESS_PORT="${INGRESS_PORT}" python3 /usr/bin/cinexis-ingress.py &
+    INGRESS_PID=$!
+    sleep 1
+    if kill -0 "${INGRESS_PID}" 2>/dev/null; then
+        log "✅ Ingress UI running (pid ${INGRESS_PID}) — open addon UI tab in HA"
+    else
+        warn "Ingress UI failed to start — voice device management unavailable"
+        INGRESS_PID=""
+    fi
+}
+
 # ── Start Alexa handler ────────────────────────────────────────────────────────
 start_alexa_handler() {
     if [ -z "${LICENSE_KEY}" ]; then
@@ -336,17 +354,19 @@ cleanup() {
     CLEAN_SHUTDOWN=true
     log "Shutting down..."
     kill_frpc
-    [ -n "${NGINX_PID}" ]      && kill "${NGINX_PID}"  2>/dev/null || true
-    [ -n "${HEARTBEAT_PID:-}" ] && kill "${HEARTBEAT_PID}" 2>/dev/null || true
-    [ -n "${ALEXA_PID}" ]      && kill "${ALEXA_PID}"  2>/dev/null || true
+    [ -n "${NGINX_PID}" ]       && kill "${NGINX_PID}"      2>/dev/null || true
+    [ -n "${HEARTBEAT_PID:-}" ] && kill "${HEARTBEAT_PID}"  2>/dev/null || true
+    [ -n "${ALEXA_PID}" ]       && kill "${ALEXA_PID}"      2>/dev/null || true
+    [ -n "${INGRESS_PID}" ]     && kill "${INGRESS_PID}"    2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 main() {
     log "=========================================="
-    log " Cinexis Remote Access v1.7.0"
+    log " Cinexis Remote Access v1.8.0"
     log " + Alexa Smart Home Integration"
+    log " + Ingress Management UI"
     log "=========================================="
 
     ensure_storage
@@ -371,7 +391,10 @@ main() {
         *)        err "Unexpected status: ${status}"; sleep 30; exec /usr/bin/cinexis-entrypoint.sh ;;
     esac
 
-    # Start Alexa handler first (before FRP) so it's ready when tunnel connects
+    # Start ingress UI (always — provides OTP setup + voice device management)
+    start_ingress
+
+    # Start Alexa handler (before FRP) so it's ready when tunnel connects
     start_alexa_handler
 
     start_nginx

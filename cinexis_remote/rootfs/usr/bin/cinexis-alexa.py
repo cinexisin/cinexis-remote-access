@@ -2,10 +2,11 @@
 """
 Cinexis Remote Access — Alexa Smart Home Handler
 Handles Alexa Smart Home API v3 directives via Home Assistant Supervisor API.
-Listens on port 18081 — FRP tunnels it as {subdomain}bot.ha1.cinexis.cloud
+Listens on port 18081 — FRP tunnels it as {subdomain}alexa.ha1.cinexis.cloud
 
 Auth: validates X-Cinexis-Secret header (timing-safe) against device_secret file.
 HA API: http://supervisor/core/api/* using SUPERVISOR_TOKEN env var.
+Voice exclusions: reads /share/cinexis/voice_exclusions.json to filter devices.
 """
 
 import json
@@ -24,6 +25,7 @@ PORT          = int(os.environ.get("ALEXA_HANDLER_PORT", "18081"))
 SUPERVISOR_TOKEN = os.environ.get("SUPERVISOR_TOKEN", "")
 HA_BASE       = "http://supervisor/core"
 SECRET_PATHS  = ["/share/cinexis/device_secret", "/data/device_secret"]
+EXCLUSIONS_FILE = "/share/cinexis/voice_exclusions.json"
 DISCOVERY_CAP = 300
 
 SUPPORTED_DOMAINS = {
@@ -44,6 +46,24 @@ DOMAIN_CATEGORY = {
 def log(msg):
     ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
     print(f"[cinexis-alexa] {ts} {msg}", flush=True)
+
+# ── Voice exclusions ──────────────────────────────────────────────────────────
+def load_exclusions():
+    """Return set of entity_ids excluded for 'alexa' platform."""
+    try:
+        with open(EXCLUSIONS_FILE) as f:
+            data = json.load(f)
+        # Format: { "entity_id": { "alexa": true, "google": false, ... }, ... }
+        excluded = set()
+        for entity_id, platforms in data.items():
+            if platforms.get("alexa", False):
+                excluded.add(entity_id)
+        return excluded
+    except FileNotFoundError:
+        return set()
+    except Exception as e:
+        log(f"Warning: could not load voice_exclusions.json: {e}")
+        return set()
 
 # ── Device secret ─────────────────────────────────────────────────────────────
 def get_device_secret():
@@ -234,11 +254,17 @@ def handle_discovery():
                                       "messageId": new_msg_id(), "payloadVersion": "3"},
                            "payload": {"endpoints": []}}}
 
+    excluded = load_exclusions()
+    if excluded:
+        log(f"Discovery: {len(excluded)} entities excluded via voice_exclusions.json")
+
     endpoints = []
     for state in states:
         entity_id = state["entity_id"]
         domain    = entity_id.split(".")[0]
         if domain not in SUPPORTED_DOMAINS:
+            continue
+        if entity_id in excluded:
             continue
         attrs     = state.get("attributes", {})
         name      = attrs.get("friendly_name") or entity_id.replace("_", " ")

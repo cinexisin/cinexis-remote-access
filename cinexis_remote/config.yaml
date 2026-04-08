@@ -1,6 +1,6 @@
 name: "Cinexis Remote Access"
 description: "Secure remote access and Alexa Smart Home for Home Assistant via Cinexis Cloud. No port forwarding required."
-version: "1.7.0"
+version: "1.8.0"
 slug: "cinexis_remote"
 init: false
 arch:
@@ -12,6 +12,10 @@ homeassistant: "2023.1.0"
 startup: services
 boot: auto
 apparmor: true
+ingress: true
+ingress_port: 18082
+panel_icon: mdi:cloud-lock
+panel_title: Cinexis
 map:
   - type: share
     read_only: false
@@ -23,6 +27,8 @@ options:
 schema:
   log_level: list(trace|debug|info|warning|error)
   name_prefix: str
+  # admin_email: your email registered with cinexis.cloud (used to activate Alexa)
   admin_email: str?
+  # admin_otp: one-time password from your email (clear after activation)
   admin_otp: str?
 url: "https://cinexis.cloud"
