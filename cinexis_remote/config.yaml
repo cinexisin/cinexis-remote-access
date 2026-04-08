@@ -1,6 +1,6 @@
 name: "Cinexis Remote Access"
 description: "Secure remote access and Alexa Smart Home for Home Assistant via Cinexis Cloud. No port forwarding required."
-version: "1.8.2"
+version: "1.8.3"
 slug: "cinexis_remote"
 init: false
 arch:
@@ -17,6 +17,7 @@ ingress_port: 18082
 panel_icon: mdi:cloud-lock
 panel_title: Cinexis
 homeassistant_api: true
+hassio_api: true
 map:
   - type: share
     read_only: false

@@ -266,9 +266,7 @@ start_ingress() {
 start_alexa_handler() {
     if [ -z "${LICENSE_KEY}" ]; then
         warn "Alexa Smart Home is disabled — no active license."
-        if [ -z "${ADMIN_EMAIL}" ]; then
-            warn "   Set your cinexis.cloud email in add-on configuration to enable."
-        fi
+        warn "   Open the Cinexis panel in the HA sidebar to activate."
         ALEXA_PID=""
         return 0
     fi
@@ -300,7 +298,7 @@ trap cleanup EXIT INT TERM
 # ── Main ───────────────────────────────────────────────────────────────────────
 main() {
     log "=========================================="
-    log " Cinexis Remote Access v1.8.2"
+    log " Cinexis Remote Access v1.8.3"
     log " + Alexa Smart Home Integration"
     log " + Ingress Management UI"
     log "=========================================="
