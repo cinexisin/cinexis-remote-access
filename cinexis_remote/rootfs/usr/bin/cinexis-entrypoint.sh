@@ -123,6 +123,12 @@ send_heartbeat() {
     if [ "${action}" = "stop" ]; then
         err "License ${status}. Stopping tunnel."
         kill_frpc
+        # Also kill Alexa handler — no valid license means no voice control
+        if [ -n "${ALEXA_PID}" ] && kill -0 "${ALEXA_PID}" 2>/dev/null; then
+            warn "Stopping Alexa handler (license invalid)."
+            kill "${ALEXA_PID}" 2>/dev/null || true
+            ALEXA_PID=""
+        fi
         return 2
     fi
     return 0
@@ -229,6 +235,13 @@ heartbeat_loop() {
 
 # ── Start Alexa handler ────────────────────────────────────────────────────────
 start_alexa_handler() {
+    if [ -z "${LICENSE_KEY}" ]; then
+        warn "Alexa Smart Home requires a license key."
+        warn "   Add your license key in the add-on configuration and restart."
+        warn "   Purchase or manage your license at: https://cinexis.cloud/pricing"
+        ALEXA_PID=""
+        return 0
+    fi
     log "Starting Alexa Smart Home handler on port ${ALEXA_PORT}..."
     ALEXA_HANDLER_PORT="${ALEXA_PORT}" python3 /usr/bin/cinexis-alexa.py &
     ALEXA_PID=$!
