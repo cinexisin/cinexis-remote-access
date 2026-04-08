@@ -14,7 +14,10 @@ FRPC_CONFIG="${STORAGE_DIR}/frpc.toml"
 HEARTBEAT_INTERVAL=300
 LOG_PREFIX="[Cinexis]"
 NAME_PREFIX="${NAME_PREFIX:-}"
-LICENSE_KEY="${LICENSE_KEY:-}"
+ADMIN_EMAIL="${ADMIN_EMAIL:-}"
+ADMIN_OTP="${ADMIN_OTP:-}"
+LICENSE_KEY_FILE="${STORAGE_DIR}/license_key"
+LICENSE_KEY=""
 SUBDOMAIN=""
 NGINX_PID=""
 FRPC_PID=""
@@ -79,6 +82,78 @@ get_ha_name() {
         -H "Authorization: Bearer ${SUPERVISOR_TOKEN:-}" \
         "http://supervisor/core/api/config" 2>/dev/null | \
         jq -r '.location_name // "Home Assistant"' 2>/dev/null || echo "Home Assistant")
+}
+
+# ── License sync via email + OTP ──────────────────────────────────────────────
+sync_license() {
+    # If we already have a cached license key, use it
+    if [ -f "${LICENSE_KEY_FILE}" ]; then
+        LICENSE_KEY=$(cat "${LICENSE_KEY_FILE}")
+        log "✅ License loaded from cache (${LICENSE_KEY:0:8}...)"
+        return 0
+    fi
+
+    # No email configured at all
+    if [ -z "${ADMIN_EMAIL}" ]; then
+        warn "No admin email configured — Alexa Smart Home will be disabled."
+        warn "   Set your cinexis.cloud email in add-on configuration to enable Alexa."
+        return 0
+    fi
+
+    # Email set but no OTP yet — request one
+    if [ -z "${ADMIN_OTP}" ]; then
+        log "Requesting license OTP for ${ADMIN_EMAIL}..."
+        local resp
+        resp=$(curl -sf --max-time 15 \
+            -X POST "https://cinexis.cloud/api/node/otp-request" \
+            -H "Content-Type: application/json" \
+            -d "{\"email\":\"${ADMIN_EMAIL}\"}" 2>/dev/null) || {
+            warn "Could not reach Cinexis Cloud to request OTP. Alexa disabled for now."
+            return 0
+        }
+        local ok
+        ok=$(echo "${resp}" | jq -r '.ok // false')
+        if [ "${ok}" = "true" ]; then
+            log "📧 OTP sent to ${ADMIN_EMAIL}."
+            log "   ➡  Check your email, then enter the OTP in add-on configuration and restart."
+        else
+            local err_code
+            err_code=$(echo "${resp}" | jq -r '.error // "unknown"')
+            warn "OTP request failed: ${err_code}"
+        fi
+        return 0
+    fi
+
+    # Both email and OTP provided — verify and fetch license
+    log "Verifying OTP for ${ADMIN_EMAIL}..."
+    local resp
+    resp=$(curl -sf --max-time 15 \
+        -X POST "https://cinexis.cloud/api/node/otp-verify" \
+        -H "Content-Type: application/json" \
+        -d "{\"email\":\"${ADMIN_EMAIL}\",\"otp\":\"${ADMIN_OTP}\"}" 2>/dev/null) || {
+        warn "Could not reach Cinexis Cloud to verify OTP."
+        return 0
+    }
+
+    local ok
+    ok=$(echo "${resp}" | jq -r '.ok // false')
+    if [ "${ok}" = "true" ]; then
+        LICENSE_KEY=$(echo "${resp}" | jq -r '.license_key // ""')
+        local tier expires
+        tier=$(echo "${resp}" | jq -r '.tier // "basic"')
+        expires=$(echo "${resp}" | jq -r '.expires_at // "0"')
+        echo "${LICENSE_KEY}" > "${LICENSE_KEY_FILE}"
+        log "✅ License activated — tier=${tier}"
+        [ "${expires}" != "0" ] && log "   Expires: $(date -d @${expires} '+%Y-%m-%d' 2>/dev/null || echo ${expires})"
+        log "   You can now clear the OTP field in add-on configuration."
+    else
+        local err_code
+        err_code=$(echo "${resp}" | jq -r '.error // "unknown"')
+        warn "OTP verification failed: ${err_code}"
+        if [ "${err_code}" = "otp_expired" ]; then
+            warn "   OTP has expired. Clear the OTP field and restart to request a new one."
+        fi
+    fi
 }
 
 # ── Register with Cinexis API ──────────────────────────────────────────────────
@@ -185,17 +260,17 @@ localIP = "127.0.0.1"
 localPort = 8099
 customDomains = ["${SUBDOMAIN}.ha1.cinexis.cloud"]
 
-# Alexa Smart Home tunnel — https://${SUBDOMAIN}bot.ha1.cinexis.cloud
+# Alexa Smart Home tunnel — https://${SUBDOMAIN}alexa.ha1.cinexis.cloud
 # cinexis.cloud routes Alexa directives here via X-Cinexis-Secret
 [[proxies]]
 name = "${NODE_ID}-alexa"
 type = "http"
 localIP = "127.0.0.1"
 localPort = ${ALEXA_PORT}
-customDomains = ["${SUBDOMAIN}bot.ha1.cinexis.cloud"]
+customDomains = ["${SUBDOMAIN}alexa.ha1.cinexis.cloud"]
 FRPCEOF
     log "HA URL   : https://${SUBDOMAIN}.ha1.cinexis.cloud"
-    log "Alexa URL: https://${SUBDOMAIN}bot.ha1.cinexis.cloud"
+    log "Alexa URL: https://${SUBDOMAIN}alexa.ha1.cinexis.cloud"
 }
 
 # ── Process management ─────────────────────────────────────────────────────────
@@ -236,9 +311,10 @@ heartbeat_loop() {
 # ── Start Alexa handler ────────────────────────────────────────────────────────
 start_alexa_handler() {
     if [ -z "${LICENSE_KEY}" ]; then
-        warn "Alexa Smart Home requires a license key."
-        warn "   Add your license key in the add-on configuration and restart."
-        warn "   Purchase or manage your license at: https://cinexis.cloud/pricing"
+        warn "Alexa Smart Home is disabled — no active license."
+        if [ -z "${ADMIN_EMAIL}" ]; then
+            warn "   Set your cinexis.cloud email in add-on configuration to enable."
+        fi
         ALEXA_PID=""
         return 0
     fi
@@ -269,7 +345,7 @@ trap cleanup EXIT INT TERM
 # ── Main ───────────────────────────────────────────────────────────────────────
 main() {
     log "=========================================="
-    log " Cinexis Remote Access v1.6.0"
+    log " Cinexis Remote Access v1.7.0"
     log " + Alexa Smart Home Integration"
     log "=========================================="
 
@@ -278,9 +354,7 @@ main() {
     ensure_secret
     ensure_short_id
     get_ha_name
-
-    log "HA URL   : https://${SUBDOMAIN}.ha1.cinexis.cloud"
-    log "Alexa URL: https://${SUBDOMAIN}bot.ha1.cinexis.cloud"
+    sync_license
 
     local status
     status=$(register_node) || {
@@ -305,7 +379,11 @@ main() {
 
     log "Cinexis Remote Access is running."
     log "🏠 HA access : https://${SUBDOMAIN}.ha1.cinexis.cloud"
-    log "🔊 Alexa     : link at cinexis.cloud — Alexa node ID: ${SUBDOMAIN}"
+    if [ -n "${LICENSE_KEY}" ]; then
+        log "🔊 Alexa     : link at cinexis.cloud — Alexa node ID: ${SUBDOMAIN}"
+    else
+        log "🔒 Alexa     : disabled — enter your cinexis.cloud email in configuration"
+    fi
 
     heartbeat_loop &
     HEARTBEAT_PID=$!
