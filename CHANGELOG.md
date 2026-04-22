@@ -5,6 +5,28 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.9.0] - 2026-04-22
+
+### Added
+- **Alexa backend selector** — new `alexa_backend` config option lets the
+  customer choose which local service handles Alexa Smart Home directives:
+  - `self` (default) — this addon handles Alexa via HA Supervisor API
+  - `bot` — addon proxies `/voice/alexa/internal` to the `cinexis-bot` at
+    `bot_host` (e.g. `192.168.1.50:3000`). The addon does not start its own
+    Alexa handler in this mode; an nginx proxy on port 18081 forwards all
+    directives to the bot instead.
+- New `bot_host` config option (required when `alexa_backend=bot`).
+
+### Notes
+- When using `alexa_backend=bot`, the bot's `alexa_device_secret` must match
+  this addon's registered `device_secret`. Copy from the Cinexis sidebar in
+  HA, paste into the bot's Settings → Alexa Smart Home → "Override device
+  secret" field.
+- No cloud-side changes — the FRP tunnel URL stays the same; only the local
+  listener changes.
+
+---
+
 ## [1.0.3] - 2026-04-02
 
 ### Fixed
