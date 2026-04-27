@@ -5,6 +5,39 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.9.1] - 2026-04-27
+
+### Fixed
+- **Registration failed forever after a corrupted node-id file.** `ensure_node_id`,
+  `ensure_secret`, and `ensure_short_id` checked `[ ! -f file ]` (file exists)
+  rather than `[ ! -s file ]` (file exists AND is non-empty). A truncated
+  zero-byte file from an interrupted previous write was therefore read as an
+  empty string, causing the API to return HTTP 400 `{"error":"missing fields"}`.
+  Now zero-byte files trigger regeneration; explicit empty-string guards exit
+  with a clear error if generation itself fails.
+- **Misleading "Failed to reach Cinexis API" message.** `register_node` used
+  `curl -sf`, which reports HTTP 4xx/5xx as a generic network failure. It now
+  uses `curl -s -w "%{http_code}"` and surfaces the real status: a network
+  problem (DNS/TLS/timeout) is reported separately from a server-side rejection,
+  and a 400 prints a hint to delete `/share/cinexis/node_id` and
+  `/share/cinexis/device_secret` and retry.
+- **Port 18082 stayed bound after registration retries.** The retry path
+  re-execs `cinexis-entrypoint.sh` without `cleanup` running (because `exec`
+  replaces the current process). The Python ingress UI subprocess was therefore
+  inherited by HA's init, kept holding port 18082, and the next boot crashed
+  with `OSError: [Errno 98] Address in use`. The retry path now explicitly
+  kills `${INGRESS_PID}` and `${ALEXA_PID}` before `sleep 60 && exec`.
+
+### Recovery for installs hit by the bug pre-1.9.1
+Delete the corrupted state files and restart the addon — the script will
+regenerate them on next boot:
+```bash
+rm -f /share/cinexis/node_id /share/cinexis/device_secret
+# then: HA → Settings → Add-ons → Cinexis Remote Access → Restart
+```
+
+---
+
 ## [1.9.0] - 2026-04-22
 
 ### Added

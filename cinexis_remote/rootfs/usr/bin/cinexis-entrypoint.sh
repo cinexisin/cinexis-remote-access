@@ -45,26 +45,32 @@ ensure_storage() {
 }
 
 # ── Node identity ──────────────────────────────────────────────────────────────
+# NOTE: Use `-s` (file exists AND non-empty) rather than `-f` (file exists).
+# A truncated/zero-byte file from an interrupted previous write would otherwise
+# be read as an empty string and cause the API to return 400 "missing fields".
 ensure_node_id() {
-    if [ ! -f "${NODE_ID_FILE}" ]; then
+    if [ ! -s "${NODE_ID_FILE}" ]; then
         local uuid
         uuid=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || \
                openssl rand -hex 16 | sed 's/\(.\{8\}\)\(.\{4\}\)\(.\{4\}\)\(.\{4\}\)\(.\{12\}\)/\1-\2-\3-\4-\5/')
+        if [ -z "${uuid}" ]; then err "Failed to generate node UUID — /proc and openssl both unavailable" >&2; exit 1; fi
         echo "${uuid}" > "${NODE_ID_FILE}"
     fi
     NODE_ID=$(cat "${NODE_ID_FILE}")
+    if [ -z "${NODE_ID}" ]; then err "node_id file empty after write — check ${STORAGE_DIR} permissions" >&2; exit 1; fi
 }
 
 ensure_secret() {
-    if [ ! -f "${SECRET_FILE}" ]; then
+    if [ ! -s "${SECRET_FILE}" ]; then
         openssl rand -hex 32 > "${SECRET_FILE}"
     fi
     DEVICE_SECRET=$(cat "${SECRET_FILE}")
+    if [ -z "${DEVICE_SECRET}" ]; then err "device_secret file empty after write — check ${STORAGE_DIR} permissions" >&2; exit 1; fi
 }
 
 # ── Short ID — auto-generated once, permanent ──────────────────────────────────
 ensure_short_id() {
-    if [ ! -f "${SHORT_ID_FILE}" ]; then
+    if [ ! -s "${SHORT_ID_FILE}" ]; then
         # 8 random lowercase alphanumeric chars — unguessable, permanent
         openssl rand -hex 4 > "${SHORT_ID_FILE}"
     fi
@@ -107,12 +113,29 @@ sync_license() {
 # ── Register with Cinexis API ──────────────────────────────────────────────────
 register_node() {
     log "Registering with Cinexis Cloud..." >&2
-    local response
-    response=$(curl -sf --max-time 15 \
+    local response http_code curl_exit
+    # Capture the HTTP status separately so we can give a useful error message:
+    #   - exit 6/7/28/35 → genuine network/DNS/TLS/timeout problem
+    #   - 4xx HTTP code → server reached but rejected the payload
+    #   - 5xx HTTP code → server is up but errored
+    response=$(curl -s --max-time 15 -w "\n%{http_code}" \
         -X POST "${API}/p2p/register" \
         -H "Content-Type: application/json" \
         -d "{\"node_id\":\"${NODE_ID}\",\"device_secret\":\"${DEVICE_SECRET}\",\"ha_name\":\"${HA_NAME}\",\"custom_name\":\"${SUBDOMAIN}\"}" \
-        2>/dev/null) || { err "Failed to reach Cinexis API. Check internet connection." >&2; return 1; }
+        2>/dev/null) || curl_exit=$?
+    if [ -n "${curl_exit:-}" ]; then
+        err "Could not reach ${API} (curl exit ${curl_exit}). Check DNS / TLS / firewall." >&2
+        return 1
+    fi
+    http_code="${response##*$'\n'}"
+    response="${response%$'\n'*}"
+    if [ "${http_code}" != "200" ]; then
+        err "Cinexis API rejected the request (HTTP ${http_code}): ${response}" >&2
+        if [ "${http_code}" = "400" ]; then
+            err "Hint: a previous run may have left an empty file in ${STORAGE_DIR}. Try: rm ${NODE_ID_FILE} ${SECRET_FILE} && restart the addon." >&2
+        fi
+        return 1
+    fi
 
     local status
     status=$(echo "${response}" | jq -r '.status // "error"')
@@ -354,7 +377,7 @@ trap cleanup EXIT INT TERM
 # ── Main ───────────────────────────────────────────────────────────────────────
 main() {
     log "=========================================="
-    log " Cinexis Remote Access v1.8.4"
+    log " Cinexis Remote Access v1.9.1"
     log " + Alexa Smart Home Integration"
     log " + Ingress Management UI"
     log "=========================================="
@@ -374,6 +397,11 @@ main() {
     local status
     status=$(register_node) || {
         err "Registration failed. Retrying in 60s..."
+        # Kill any subprocesses we spawned (especially the ingress UI on 18082)
+        # before re-exec'ing — otherwise port 18082 stays bound and the next
+        # boot crashes with "OSError: [Errno 98] Address in use".
+        [ -n "${INGRESS_PID}" ] && kill "${INGRESS_PID}"  2>/dev/null || true
+        [ -n "${ALEXA_PID}" ]   && kill "${ALEXA_PID}"    2>/dev/null || true
         sleep 60
         exec /usr/bin/cinexis-entrypoint.sh
     }
