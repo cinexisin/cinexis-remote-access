@@ -5,6 +5,33 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.10.0] - 2026-05-24
+
+### Added
+- **Customer onboarding wizard** — first-run experience in the ingress UI. On
+  fresh install the addon shows a 4-step wizard instead of the legacy
+  license-OTP screen:
+    1. Customer details (name / email / WhatsApp / location / GSTIN / use case)
+    2. Plan picker (Lite / Smart / Pro / Ultimate × Monthly / Quarterly /
+       Half-yearly / Yearly) — UPI AutoPay supported on the hosted checkout
+    3. Razorpay payment page in a new tab with auto-poll
+    4. WhatsApp / Telegram QR opt-in for event notifications
+- New `cinexis_addon_call()` helper that automatically attaches the addon's
+  node credentials to every call to `cinexis.cloud/api/addon/*`.
+- `/share/cinexis/customer_profile.json` — written after the wizard
+  completes; the addon shows the legacy dashboard on subsequent boots.
+- Three new ingress endpoints (`/wizard/onboard`, `/wizard/subscribe`,
+  `/wizard/notif`) plus `/wizard/status` for the JS poller — all of them
+  proxy to the matching `cinexis.cloud/api/addon/*` endpoint.
+
+### Notes
+- No breaking change for existing customers — anyone already activated has
+  a license cache and never sees the wizard.
+- Offline-paid customers can skip Razorpay from step 3 — dealer activates
+  them manually from admin.cinexis.cloud.
+
+---
+
 ## [1.9.1] - 2026-04-27
 
 ### Fixed

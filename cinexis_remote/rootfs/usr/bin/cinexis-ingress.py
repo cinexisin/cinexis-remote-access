@@ -20,6 +20,9 @@ PORT              = int(os.environ.get("INGRESS_PORT", "18082"))
 STORAGE_DIR       = "/share/cinexis"
 LICENSE_KEY_FILE  = f"{STORAGE_DIR}/license_key"
 EXCLUSIONS_FILE   = f"{STORAGE_DIR}/voice_exclusions.json"
+NODE_ID_FILE      = f"{STORAGE_DIR}/node_id"
+DEVICE_SECRET_FILE= f"{STORAGE_DIR}/device_secret"
+CUSTOMER_PROFILE_FILE = f"{STORAGE_DIR}/customer_profile.json"
 HA_BASE           = "http://supervisor/core"
 CINEXIS_API       = "https://cinexis.cloud"
 
@@ -94,6 +97,53 @@ def ha_get_states():
     except Exception as e:
         log(f"HA states fetch failed: {e}")
         return []
+
+def get_node_credentials():
+    """Read node_id + device_secret from /share/cinexis. Returns (node_id, secret) or (None, None)."""
+    try:
+        with open(NODE_ID_FILE) as f:        node_id = f.read().strip()
+        with open(DEVICE_SECRET_FILE) as f:  secret  = f.read().strip()
+        if node_id and secret: return node_id, secret
+    except Exception:
+        pass
+    return None, None
+
+def load_customer_profile():
+    """Return the saved customer profile dict, or None if onboarding incomplete."""
+    try:
+        with open(CUSTOMER_PROFILE_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+def save_customer_profile(data):
+    os.makedirs(STORAGE_DIR, exist_ok=True)
+    with open(CUSTOMER_PROFILE_FILE, "w") as f:
+        json.dump(data, f, indent=2)
+
+def cinexis_addon_call(method, path, payload=None):
+    """Call /api/addon/* with node credentials auto-attached. Returns parsed JSON or {'ok':False,...}."""
+    node_id, secret = get_node_credentials()
+    if not node_id or not secret:
+        return {"ok": False, "error": "no_node_credentials"}
+    body = {"node_id": node_id, "device_secret": secret}
+    if payload: body.update(payload)
+    if method == "GET":
+        qs = urllib.parse.urlencode(body)
+        url = f"{CINEXIS_API}/api/addon{path}?{qs}"
+        req = urllib.request.Request(url, method="GET")
+    else:
+        data = json.dumps(body).encode()
+        url = f"{CINEXIS_API}/api/addon{path}"
+        req = urllib.request.Request(url, data=data, method=method, headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return json.loads(r.read().decode())
+    except urllib.error.HTTPError as e:
+        try:    return json.loads(e.read().decode())
+        except: return {"ok": False, "error": f"http_{e.code}"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
 
 def cinexis_post(path, payload):
     body = json.dumps(payload).encode()
@@ -190,6 +240,225 @@ function showTab(id){{
 </html>"""
 
 # ── License / OTP page ────────────────────────────────────────────────────────
+def render_onboarding_wizard(base_path="/", error=""):
+    """Single-page wizard shown when customer_profile.json is missing.
+
+    Sections:
+      A. Customer details      → POST {base}wizard/onboard
+      B. Plan picker           → POST {base}wizard/subscribe  (returns short_url)
+      C. Awaiting payment      → JS polls {base}wizard/status
+      D. Notification opt-in   → POST {base}wizard/notif  (returns QR deep_link)
+      E. Done                  → reload to dashboard
+
+    All sections are in the DOM at once; client-side JS toggles visibility.
+    Servers state via small JSON responses — no full page reloads.
+    """
+    err_html = f'<div class="alert err">{error}</div>' if error else ''
+    return f"""
+<div class="wizard">
+  <div class="hero">
+    <div class="logo">⚡</div>
+    <h1>Welcome to Cinexis</h1>
+    <p class="muted">Let's get your Home Assistant remote access set up — about 90 seconds.</p>
+  </div>
+
+  <div class="steps">
+    <div class="step active" data-step="a"><span class="dot">1</span> Your details</div>
+    <div class="step"        data-step="b"><span class="dot">2</span> Choose plan</div>
+    <div class="step"        data-step="c"><span class="dot">3</span> Pay</div>
+    <div class="step"        data-step="d"><span class="dot">4</span> Notifications</div>
+  </div>
+
+  {err_html}
+
+  <!-- ── A. Customer details ─────────────────────────────────────────── -->
+  <section id="sec-a" class="active">
+    <h2>Tell us about you</h2>
+    <p class="muted">Used for your account, invoices, and renewal reminders. You can change everything later.</p>
+    <form id="form-a">
+      <label>Full name *</label>      <input name="name"  required>
+      <label>Email *</label>           <input name="email" type="email" required placeholder="you@example.com">
+      <label>WhatsApp number</label>   <input name="phone" placeholder="+91 98765 43210">
+      <label>City / Location</label>   <input name="location" placeholder="Mumbai, Maharashtra">
+      <label>GSTIN (optional)</label>  <input name="gstin" placeholder="22AAAAA0000A1Z5">
+      <label>Use case</label>
+      <select name="use_case">
+        <option value="home">Home</option>
+        <option value="office">Office</option>
+        <option value="showroom">Showroom / demo</option>
+        <option value="rental">Rental property</option>
+      </select>
+      <button type="submit" class="btn">Continue →</button>
+    </form>
+  </section>
+
+  <!-- ── B. Plan picker ──────────────────────────────────────────────── -->
+  <section id="sec-b">
+    <h2>Pick your plan</h2>
+    <p class="muted">All plans include a 3-day full-features trial. Cancel anytime.</p>
+    <div class="cycle">
+      <label><input type="radio" name="billing" value="monthly" checked> Monthly</label>
+      <label><input type="radio" name="billing" value="quarterly"> Quarterly <span class="save">-10%</span></label>
+      <label><input type="radio" name="billing" value="halfyearly"> Half-yearly <span class="save">-15%</span></label>
+      <label><input type="radio" name="billing" value="yearly"> Yearly <span class="save">-17%</span></label>
+    </div>
+    <div class="plans">
+      <div class="plan" data-slug="ha-remote"><h3>Lite</h3><div class="price" data-m="299" data-q="799" data-h="1499" data-y="2990">₹299/mo</div><ul><li>HA remote access</li><li>Encrypted tunnel</li><li>Email support</li></ul><button class="btn ghost" data-pick="ha-remote">Choose Lite</button></div>
+      <div class="plan" data-slug="smart"><h3>Smart</h3><div class="price" data-m="399" data-q="1077" data-h="2035" data-y="3830">₹399/mo</div><ul><li>Everything in Lite</li><li>WhatsApp notifications</li><li>Telegram notifications</li></ul><button class="btn ghost" data-pick="smart">Choose Smart</button></div>
+      <div class="plan highlight" data-slug="ha-voice"><h3>Pro</h3><div class="price" data-m="599" data-q="1599" data-h="2999" data-y="5990">₹599/mo</div><ul><li>Everything in Smart</li><li>Alexa voice control</li><li>Priority WA support</li></ul><button class="btn" data-pick="ha-voice">Choose Pro</button></div>
+      <div class="plan" data-slug="ultimate"><h3>Ultimate</h3><div class="price" data-m="799" data-q="2157" data-h="4075" data-y="7670">₹799/mo</div><ul><li>Everything in Pro</li><li>Google Home</li><li>Siri Shortcuts</li></ul><button class="btn ghost" data-pick="ultimate">Choose Ultimate</button></div>
+    </div>
+    <p class="muted small">Already paid your dealer / partner? <a href="#" id="offline-link">Skip Razorpay — admin will activate manually.</a></p>
+  </section>
+
+  <!-- ── C. Awaiting payment ─────────────────────────────────────────── -->
+  <section id="sec-c">
+    <h2>Almost there</h2>
+    <p>Click the button below to complete payment on Razorpay. UPI AutoPay, cards, and netbanking all supported.</p>
+    <a id="pay-link" href="#" target="_blank" class="btn big">Pay with UPI / Card / Netbanking ↗</a>
+    <p class="muted small">After payment, this page auto-refreshes within 30 seconds.</p>
+    <div id="poll-status" class="muted small" style="margin-top:14px"></div>
+  </section>
+
+  <!-- ── D. Notifications ────────────────────────────────────────────── -->
+  <section id="sec-d">
+    <h2>Get alerts on WhatsApp / Telegram</h2>
+    <p class="muted">Face recognition events, door unlocks, bot offline alerts — pushed to your phone in real time. Skip if you don't want them.</p>
+    <div class="qr-area">
+      <div class="qr-card">
+        <h3>📱 WhatsApp</h3>
+        <div id="wa-qr" class="qr-placeholder">Click to generate</div>
+        <button class="btn ghost small" data-channel="whatsapp">Get WhatsApp link</button>
+      </div>
+      <div class="qr-card">
+        <h3>💬 Telegram</h3>
+        <div id="tg-qr" class="qr-placeholder">Click to generate</div>
+        <button class="btn ghost small" data-channel="telegram">Get Telegram link</button>
+      </div>
+    </div>
+    <button id="finish" class="btn big">All done — open dashboard →</button>
+  </section>
+</div>
+
+<style>
+  .wizard {{ max-width: 720px; margin: 0 auto; padding: 24px 16px }}
+  .hero {{ text-align: center; padding: 24px 0 }}
+  .hero .logo {{ font-size: 2.6rem }}
+  .hero h1 {{ font-size: 1.6rem; margin: 8px 0 4px }}
+  .muted {{ color: var(--text3); font-size: .92rem }}
+  .small {{ font-size: .82rem }}
+  .steps {{ display: flex; gap: 8px; margin: 16px 0 24px; flex-wrap: wrap }}
+  .step {{ flex: 1 1 22%; padding: 10px 12px; border-radius: 8px; background: var(--card); font-size: .82rem; opacity: .5 }}
+  .step.active {{ opacity: 1; background: var(--accent2); color: #fff }}
+  .step .dot {{ display: inline-block; width: 22px; height: 22px; line-height: 22px; text-align: center; background: rgba(0,0,0,.2); border-radius: 50%; margin-right: 6px; font-weight: 700 }}
+  section {{ display: none; background: var(--card); border-radius: 14px; padding: 24px; margin-bottom: 16px }}
+  section.active {{ display: block }}
+  section h2 {{ margin: 0 0 6px; font-size: 1.2rem }}
+  form label {{ display: block; font-size: .8rem; color: var(--text2); margin: 12px 0 4px }}
+  form input, form select {{ width: 100%; padding: 10px 12px; background: var(--bg); border: 1px solid #2a2f3c; border-radius: 8px; color: var(--text); font-size: .95rem }}
+  .btn {{ display: inline-block; margin-top: 16px; padding: 12px 22px; background: var(--accent2); color: #fff; border: 0; border-radius: 8px; font-weight: 600; cursor: pointer; text-decoration: none }}
+  .btn.big {{ width: 100%; text-align: center; font-size: 1rem; padding: 14px }}
+  .btn.ghost {{ background: transparent; border: 1px solid var(--accent2); color: var(--accent2) }}
+  .btn.small {{ padding: 8px 14px; font-size: .85rem; margin-top: 8px }}
+  .cycle {{ display: flex; gap: 14px; flex-wrap: wrap; margin: 14px 0 }}
+  .cycle label {{ background: var(--bg); padding: 8px 12px; border-radius: 8px; cursor: pointer; font-size: .88rem }}
+  .save {{ color: #16a34a; font-weight: 700; font-size: .76rem }}
+  .plans {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 14px }}
+  .plan {{ background: var(--bg); padding: 16px; border-radius: 12px; border: 1px solid #2a2f3c }}
+  .plan.highlight {{ border-color: var(--accent2); box-shadow: 0 0 0 2px rgba(99,102,241,.2) }}
+  .plan h3 {{ margin: 0 0 6px }}
+  .plan .price {{ font-size: 1.4rem; font-weight: 800; margin-bottom: 10px }}
+  .plan ul {{ padding-left: 18px; margin: 0 0 12px; font-size: .82rem }}
+  .plan ul li {{ margin: 4px 0 }}
+  .qr-area {{ display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 16px 0 }}
+  .qr-card {{ background: var(--bg); padding: 18px; border-radius: 12px; text-align: center }}
+  .qr-placeholder {{ background: #0b0f17; min-height: 140px; display: flex; align-items: center; justify-content: center; border-radius: 8px; font-size: .82rem; color: var(--text3); padding: 10px; word-break: break-all }}
+  .alert.err {{ background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; padding: 10px 14px; border-radius: 8px; margin-bottom: 14px }}
+</style>
+<script>
+const BASE = '{base_path}';
+function $(s){{return document.querySelector(s)}}
+function $$(s){{return document.querySelectorAll(s)}}
+function showSec(letter){{
+  $$('section').forEach(s=>s.classList.remove('active'));
+  $('#sec-'+letter).classList.add('active');
+  $$('.step').forEach((s,i)=>s.classList.toggle('active', 'abcd'.indexOf(s.dataset.step) <= 'abcd'.indexOf(letter)));
+  window.scrollTo({{top:0,behavior:'smooth'}});
+}}
+
+// Step A — submit details
+$('#form-a').onsubmit = async (e) => {{
+  e.preventDefault();
+  const fd = Object.fromEntries(new FormData(e.target));
+  const btn = e.target.querySelector('button'); btn.disabled = true; btn.textContent = 'Saving…';
+  const r = await fetch(BASE+'wizard/onboard', {{method:'POST', headers:{{'Content-Type':'application/json'}}, body: JSON.stringify(fd)}}).then(r=>r.json()).catch(e=>({{ok:false,error:String(e)}}));
+  if (r.ok) {{ showSec('b'); }} else {{ alert('Could not save: ' + (r.error || 'unknown')); btn.disabled = false; btn.textContent = 'Continue →'; }}
+}};
+
+// Step B — plan selection
+function getBilling(){{ return document.querySelector('input[name="billing"]:checked').value; }}
+function updatePrices(){{
+  const b = getBilling(); const keys = {{monthly:'m', quarterly:'q', halfyearly:'h', yearly:'y'}};
+  $$('.price').forEach(el => {{
+    const v = el.dataset[keys[b]];
+    el.textContent = '₹' + Number(v).toLocaleString('en-IN') + '/' + b.replace('ly','');
+  }});
+}}
+$$('input[name="billing"]').forEach(r => r.addEventListener('change', updatePrices));
+updatePrices();
+$$('.plan button').forEach(btn => btn.onclick = async () => {{
+  const slug = btn.dataset.pick; const billing = getBilling();
+  btn.disabled = true; btn.textContent = 'Creating subscription…';
+  const r = await fetch(BASE+'wizard/subscribe', {{method:'POST', headers:{{'Content-Type':'application/json'}}, body: JSON.stringify({{plan_slug:slug, billing_period:billing}})}}).then(r=>r.json());
+  if (r.ok && r.short_url) {{
+    $('#pay-link').href = r.short_url;
+    showSec('c');
+    pollStatus();
+  }} else {{
+    alert('Could not start subscription: ' + (r.error || 'unknown') + '\\n\\nIf Razorpay is being slow, ask your dealer to mark you as paid offline from admin.cinexis.cloud.');
+    btn.disabled = false; btn.textContent = 'Choose ' + btn.parentElement.querySelector('h3').textContent;
+  }}
+}});
+$('#offline-link').onclick = (e) => {{
+  e.preventDefault();
+  alert('Got it. Your dealer can mark you as paid from admin.cinexis.cloud → Customers → your row → 💵 Mark Paid.\\n\\nMeanwhile, your 3-day trial of full features starts now.');
+  showSec('d');
+}};
+
+// Step C — poll subscription status
+let pollTimer = null;
+async function pollStatus(){{
+  $('#poll-status').textContent = '⏳ Watching for payment…';
+  pollTimer = setInterval(async () => {{
+    const r = await fetch(BASE+'wizard/status').then(r=>r.json()).catch(()=>null);
+    if (r && r.license_status === 'active') {{
+      clearInterval(pollTimer);
+      $('#poll-status').textContent = '✅ Payment received! Setting up notifications…';
+      setTimeout(()=>showSec('d'), 800);
+    }}
+  }}, 5000);
+}}
+
+// Step D — notification QRs
+$$('.qr-card button').forEach(btn => btn.onclick = async () => {{
+  const ch = btn.dataset.channel; btn.disabled = true; btn.textContent = 'Generating…';
+  const r = await fetch(BASE+'wizard/notif', {{method:'POST', headers:{{'Content-Type':'application/json'}}, body: JSON.stringify({{channel: ch}})}}).then(r=>r.json());
+  if (r.ok && r.deep_link) {{
+    const tgt = $('#'+(ch==='whatsapp'?'wa-qr':'tg-qr'));
+    // QR via Google Chart API (free, no signup)
+    tgt.innerHTML = '<a href="' + r.deep_link + '" target="_blank">'
+      + '<img src="https://api.qrserver.com/v1/create-qr-code/?size=140x140&data=' + encodeURIComponent(r.deep_link) + '" alt="QR" style="background:#fff;padding:6px;border-radius:6px"></a>'
+      + '<div style="margin-top:6px;font-size:.75rem"><a href="' + r.deep_link + '" target="_blank">Or tap here</a></div>';
+    btn.textContent = '↻ Regenerate'; btn.disabled = false;
+  }} else {{
+    alert('Could not generate ' + ch + ' link: ' + (r.error || 'unknown'));
+    btn.disabled = false; btn.textContent = 'Get ' + ch + ' link';
+  }}
+}});
+$('#finish').onclick = () => location.href = BASE;
+</script>
+"""
+
 def render_license_section(msg="", msg_type=""):
     active = license_active()
     msg_html = f'<div class="msg msg-{msg_type}">{msg}</div>' if msg else ""
@@ -447,9 +716,18 @@ class IngressHandler(http.server.BaseHTTPRequestHandler):
         base = self.ingress_base()
 
         if path in ("/", "/index.html"):
-            lic = render_license_section()
+            # First-run experience: if customer hasn't completed the wizard,
+            # show it instead of the legacy license/voice dashboard.
+            if not load_customer_profile():
+                self.send_html(200, page("Welcome to Cinexis", render_onboarding_wizard(base_path=base), base_path=base))
+                return
+            lic   = render_license_section()
             voice = render_voice_section()
             self.send_html(200, page("Cinexis Setup", lic + voice, base_path=base))
+        elif path == "/wizard/status":
+            # Addon-side proxy of /api/addon/status so the JS can poll over
+            # ingress (cross-origin to cinexis.cloud would need CORS).
+            self.send_json(200, cinexis_addon_call("GET", "/status"))
         elif path == "/health":
             self.send_json(200, {"ok": True})
         else:
@@ -458,6 +736,51 @@ class IngressHandler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         path = self.path.split("?")[0]
         base = self.ingress_base()
+
+        # ── Onboarding wizard (first-run experience) ───────────────────────
+        if path == "/wizard/onboard":
+            try:
+                payload = json.loads(self.read_body() or b"{}")
+            except Exception:
+                return self.send_json(400, {"ok": False, "error": "bad_json"})
+            resp = cinexis_addon_call("POST", "/onboard", payload)
+            if resp.get("ok"):
+                # Persist locally so we don't re-show the wizard next boot
+                save_customer_profile({
+                    "customer_id": resp.get("customer_id"),
+                    "name":        payload.get("name"),
+                    "email":       payload.get("email"),
+                    "phone":       payload.get("phone"),
+                    "location":    payload.get("location"),
+                    "gstin":       payload.get("gstin"),
+                    "use_case":    payload.get("use_case"),
+                    "onboarded_at": datetime.now(timezone.utc).isoformat(),
+                })
+            return self.send_json(200, resp)
+
+        if path == "/wizard/subscribe":
+            try:
+                payload = json.loads(self.read_body() or b"{}")
+            except Exception:
+                return self.send_json(400, {"ok": False, "error": "bad_json"})
+            resp = cinexis_addon_call("POST", "/subscribe", payload)
+            if resp.get("ok"):
+                # Stash subscription URL so we can show "renew" link later
+                prof = load_customer_profile() or {}
+                prof["subscription_id"]        = resp.get("subscription_id")
+                prof["subscription_short_url"] = resp.get("short_url")
+                prof["chosen_plan"]            = payload.get("plan_slug")
+                prof["chosen_billing"]         = payload.get("billing_period")
+                save_customer_profile(prof)
+            return self.send_json(200, resp)
+
+        if path == "/wizard/notif":
+            try:
+                payload = json.loads(self.read_body() or b"{}")
+            except Exception:
+                return self.send_json(400, {"ok": False, "error": "bad_json"})
+            resp = cinexis_addon_call("POST", "/notif/link-token", payload)
+            return self.send_json(200, resp)
 
         if path == "/license/send-otp":
             form = self.parse_form()
