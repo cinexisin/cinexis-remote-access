@@ -404,7 +404,7 @@ trap cleanup EXIT INT TERM
 # ── Main ───────────────────────────────────────────────────────────────────────
 main() {
     log "=========================================="
-    log " Cinexis Remote Access v1.11.2"
+    log " Cinexis Remote Access v1.11.3"
     log " + Alexa Smart Home Integration"
     log " + Ingress Management UI"
     log "=========================================="
@@ -421,17 +421,29 @@ main() {
     get_ha_name
     sync_license
 
-    local status
-    status=$(register_node) || {
-        err "Registration failed. Retrying in 60s..."
-        # Kill any subprocesses we spawned (especially the ingress UI on 18082)
-        # before re-exec'ing — otherwise port 18082 stays bound and the next
-        # boot crashes with "OSError: [Errno 98] Address in use".
-        [ -n "${INGRESS_PID}" ] && kill "${INGRESS_PID}"  2>/dev/null || true
-        [ -n "${ALEXA_PID}" ]   && kill "${ALEXA_PID}"    2>/dev/null || true
-        sleep 60
-        exec /usr/bin/cinexis-entrypoint.sh
-    }
+    # ── Registration retry loop (in-place) ───────────────────────────────
+    # PREVIOUSLY this did `exec /usr/bin/cinexis-entrypoint.sh` on failure,
+    # which replaced the bash process and killed every spawned child —
+    # including the ingress UI. HA's "addon ready?" probe then failed and
+    # the customer saw "addon seems not ready" in their browser.
+    #
+    # Now we loop in-place with exponential backoff so the ingress / WA /
+    # events services stay alive across cloud-registration retries. Customer
+    # can still open the addon UI and configure WhatsApp + notification rules
+    # even when the cloud is unreachable.
+    local status retry_count=0 backoff=15
+    while ! status=$(register_node); do
+        retry_count=$((retry_count + 1))
+        # Cap backoff at 5 min — we want fast retry when the network blip
+        # is short, but don't hammer the cloud during a real outage.
+        backoff=$(( retry_count < 5 ? 15 * (1 << (retry_count - 1)) : 300 ))
+        if [ "$backoff" -gt 300 ]; then backoff=300; fi
+        warn "Registration retry #$retry_count in ${backoff}s. The addon UI stays open the whole time — open it to configure WhatsApp / Telegram / rules even now."
+        sleep "$backoff"
+    done
+    if [ "$retry_count" -gt 0 ]; then
+        log "Registration succeeded after $retry_count retry(ies)."
+    fi
 
     case "${status}" in
         pending)  wait_for_approval ;;

@@ -5,6 +5,21 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.11.3] - 2026-05-25
+
+### Fixed
+- **"Addon seems not ready" error when cloud unreachable.** Previously when
+  cloud registration failed (DNS/firewall/transit issue), the script did
+   to retry, which replaced the bash process and killed
+  every spawned child including the ingress UI. HA showed "addon not ready"
+  intermittently because the UI was down for ~3 seconds every retry cycle.
+  Now the registration retry loops in-place with exponential backoff (15s,
+  30s, 60s, 120s, then capped at 300s) — the ingress UI, WhatsApp Web service
+  and event listener stay alive throughout, so the customer can configure
+  notifications even when the cloud side is unreachable.
+
+---
+
 ## [1.11.2] - 2026-05-25
 
 ### Added — Daily summary report
