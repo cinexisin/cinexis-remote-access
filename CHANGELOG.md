@@ -5,6 +5,41 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.11.1] - 2026-05-25
+
+### Added — Phase 2: Telegram + HA events + rules editor
+
+The dashboard now has the full GreenAPI-style stack: scan WhatsApp, paste a
+Telegram bot token, define rules like *"front door opens between 10 pm and
+6 am → message my family group"*, and the new HA WebSocket listener fires
+them within a second.
+
+- **Telegram setup** card on the dashboard. Paste a [@BotFather](https://t.me/BotFather)
+  token + default chat_id, hit *Verify & save* (calls Telegram `getMe` to
+  validate), then *Send test*. Token stored in `/share/cinexis/telegram_config.json`.
+- **Notification Rules** card with full CRUD. Each rule: name, HA entity id
+  (autocompleted from a fetched `/api/states`), optional from/to state
+  filter, message template with mustache-style placeholders
+  (`{{name}}`, `{{state}}`, `{{old_state}}`, `{{time}}`, `{{date}}`, `{{datetime}}`,
+  `{{unit}}`), channels (WhatsApp / Telegram / both), per-channel recipients,
+  cooldown seconds, enabled toggle. Stored in
+  `/share/cinexis/notification_rules.json`.
+- **`cinexis-events.py`** — new Python service that connects to HA's
+  WebSocket API via `SUPERVISOR_TOKEN`, subscribes to `state_changed`, and
+  fires matching rules. Reloads rules from disk every 30 s — UI edits take
+  effect quickly. Per-rule cooldown stored in
+  `notification_rules_last_fired.json` so a chatty motion sensor doesn't
+  blast 100 messages. Auto-reconnects to HA on disconnect with a 10 s
+  backoff.
+- **Dockerfile**: `py3-pip` + `websocket-client==1.8.0` added.
+
+### Coming next (v1.11.2)
+- Daily morning summary report (configurable HH:MM)
+- Per-entity batch notifications (group door-open events from same hour)
+- Quick-action templates: "Front door alert", "Battery low", "AC reminder"
+
+---
+
 ## [1.11.0] - 2026-05-25
 
 ### Added — Phase 1: WhatsApp Web (Baileys) pairing

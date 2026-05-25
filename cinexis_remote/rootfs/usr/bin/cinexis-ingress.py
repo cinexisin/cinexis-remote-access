@@ -24,6 +24,8 @@ EXCLUSIONS_FILE   = f"{STORAGE_DIR}/voice_exclusions.json"
 NODE_ID_FILE      = f"{STORAGE_DIR}/node_id"
 DEVICE_SECRET_FILE= f"{STORAGE_DIR}/device_secret"
 CUSTOMER_PROFILE_FILE = f"{STORAGE_DIR}/customer_profile.json"
+TELEGRAM_CONFIG_FILE  = f"{STORAGE_DIR}/telegram_config.json"
+RULES_FILE            = f"{STORAGE_DIR}/notification_rules.json"
 HA_BASE           = "http://supervisor/core"
 CINEXIS_API       = "https://cinexis.cloud"
 
@@ -139,6 +141,53 @@ def cinexis_addon_call(method, path, payload=None):
         req = urllib.request.Request(url, data=data, method=method, headers={"Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=15) as r:
+            return json.loads(r.read().decode())
+    except urllib.error.HTTPError as e:
+        try:    return json.loads(e.read().decode())
+        except: return {"ok": False, "error": f"http_{e.code}"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+def load_rules():
+    try:
+        with open(RULES_FILE) as f:
+            return json.load(f).get("rules", [])
+    except Exception:
+        return []
+
+def save_rules(rules):
+    os.makedirs(STORAGE_DIR, exist_ok=True)
+    with open(RULES_FILE, "w") as f:
+        json.dump({"rules": rules}, f, indent=2)
+
+def load_telegram_config():
+    """Return { bot_token, bot_username, default_chat_id } or empty dict."""
+    try:
+        with open(TELEGRAM_CONFIG_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def save_telegram_config(data):
+    os.makedirs(STORAGE_DIR, exist_ok=True)
+    with open(TELEGRAM_CONFIG_FILE, "w") as f:
+        json.dump(data, f, indent=2)
+
+def telegram_api(method, payload=None, bot_token=None):
+    """Wrapper around api.telegram.org. Returns parsed JSON or {ok:False,...}."""
+    cfg = load_telegram_config()
+    token = bot_token or cfg.get("bot_token")
+    if not token:
+        return {"ok": False, "error": "no_bot_token"}
+    url = f"https://api.telegram.org/bot{token}/{method}"
+    try:
+        if payload:
+            data = json.dumps(payload).encode()
+            req = urllib.request.Request(url, data=data, method="POST",
+                                          headers={"Content-Type": "application/json"})
+        else:
+            req = urllib.request.Request(url, method="GET")
+        with urllib.request.urlopen(req, timeout=10) as r:
             return json.loads(r.read().decode())
     except urllib.error.HTTPError as e:
         try:    return json.loads(e.read().decode())
@@ -460,6 +509,197 @@ async function pollStatus(){{
 
 // Step D — placeholder until v1.11 ships the Baileys-based WA Web + TG flow.
 $('#finish').onclick = () => location.href = BASE;
+</script>
+"""
+
+def render_rules_section(base_path="/"):
+    """Notification rules CRUD. List + add/edit/delete via small JS.
+    On save → POST /rules/save which writes notification_rules.json.
+    cinexis-events.py reloads the file every 30s so changes take effect quickly.
+    """
+    rules = load_rules()
+    rule_rows = ""
+    for r in rules:
+        trig = r.get("trigger") or {}
+        cond = f"{trig.get('entity_id','—')}: {trig.get('from','any')} → {trig.get('to','any')}"
+        chans = ", ".join(r.get("channels") or [])
+        rule_rows += f"""
+        <tr data-id="{r.get('id')}">
+          <td>{esc_html(r.get('name','—'))}</td>
+          <td><code style="font-size:.78rem">{esc_html(cond)}</code></td>
+          <td>{esc_html(chans)}</td>
+          <td>{'✅' if r.get('enabled', True) else '⏸'}</td>
+          <td><button class="btn btn-ghost small" onclick="editRule('{r.get('id')}')">Edit</button>
+              <button class="btn btn-ghost small" onclick="delRule('{r.get('id')}')" style="color:#ef4444">Delete</button></td>
+        </tr>"""
+    return f"""
+<div class="card" id="rules-card">
+  <div class="card-header"><span class="card-icon">⚡</span>Notification Rules</div>
+  <p class="muted small">Pick HA entities → fire a message to WhatsApp / Telegram when they change. Rules apply within 30 s of saving.</p>
+  <button class="btn btn-primary" onclick="newRule()" style="margin-bottom:14px">+ New rule</button>
+  <table class="rules-table" style="width:100%;border-collapse:collapse;font-size:.88rem">
+    <thead><tr><th align="left">Name</th><th align="left">Trigger</th><th align="left">Channels</th><th>On</th><th></th></tr></thead>
+    <tbody id="rules-tbody">{rule_rows or '<tr><td colspan=5 class=muted style="padding:14px;text-align:center">No rules yet — click "+ New rule" to add one.</td></tr>'}</tbody>
+  </table>
+</div>
+
+<div id="rule-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:1000;align-items:center;justify-content:center">
+  <div style="background:var(--card);padding:24px;border-radius:14px;max-width:520px;width:90%;max-height:90vh;overflow:auto">
+    <h2 id="rule-modal-title" style="margin:0 0 16px">New rule</h2>
+    <form id="rule-form">
+      <input type="hidden" name="id">
+      <label>Name</label><input name="name" required placeholder="Front door at night" style="width:100%;padding:8px;background:var(--bg);border:1px solid #2a2f3c;border-radius:6px;color:var(--text);margin-bottom:10px">
+      <label>Entity ID (HA)</label><input name="entity_id" required placeholder="binary_sensor.front_door" list="entity-list" style="width:100%;padding:8px;background:var(--bg);border:1px solid #2a2f3c;border-radius:6px;color:var(--text);font-family:monospace;font-size:.85rem;margin-bottom:10px">
+      <datalist id="entity-list"></datalist>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+        <div><label>From state (optional)</label><input name="from" placeholder="off" style="width:100%;padding:8px;background:var(--bg);border:1px solid #2a2f3c;border-radius:6px;color:var(--text);margin-bottom:10px"></div>
+        <div><label>To state (optional)</label><input name="to" placeholder="on" style="width:100%;padding:8px;background:var(--bg);border:1px solid #2a2f3c;border-radius:6px;color:var(--text);margin-bottom:10px"></div>
+      </div>
+      <label>Message template</label>
+      <textarea name="message_template" rows="3" required style="width:100%;padding:8px;background:var(--bg);border:1px solid #2a2f3c;border-radius:6px;color:var(--text);font-family:monospace;font-size:.85rem;margin-bottom:6px" placeholder="🚨 {{{{name}}}} opened at {{{{time}}}}"></textarea>
+      <div class="muted small" style="margin-bottom:10px">Vars: <code>{{{{entity}}}}</code>, <code>{{{{state}}}}</code>, <code>{{{{old_state}}}}</code>, <code>{{{{name}}}}</code>, <code>{{{{time}}}}</code>, <code>{{{{date}}}}</code>, <code>{{{{datetime}}}}</code>, <code>{{{{unit}}}}</code></div>
+      <label>Channels</label>
+      <div style="margin-bottom:10px">
+        <label style="display:inline-block;margin-right:14px"><input type="checkbox" name="ch_wa"> 📱 WhatsApp</label>
+        <label style="display:inline-block"><input type="checkbox" name="ch_tg"> 💬 Telegram</label>
+      </div>
+      <label>WhatsApp recipients (comma-separated, +91…)</label>
+      <input name="wa_recipients" placeholder="918792962291, 911234567890" style="width:100%;padding:8px;background:var(--bg);border:1px solid #2a2f3c;border-radius:6px;color:var(--text);margin-bottom:10px">
+      <label>Telegram chat IDs (comma-separated; blank = default)</label>
+      <input name="tg_chat_ids" placeholder="123456789, -100456789012" style="width:100%;padding:8px;background:var(--bg);border:1px solid #2a2f3c;border-radius:6px;color:var(--text);margin-bottom:10px">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+        <div><label>Cooldown (seconds)</label><input name="cooldown_seconds" type="number" value="30" min="0" style="width:100%;padding:8px;background:var(--bg);border:1px solid #2a2f3c;border-radius:6px;color:var(--text)"></div>
+        <div><label>Enabled</label><div style="padding:10px 0"><label><input type="checkbox" name="enabled" checked> Active</label></div></div>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end">
+        <button type="button" class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+        <button type="submit" class="btn btn-primary">Save rule</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+const RULES_BASE = '{base_path}';
+let RULES_CACHE = {json.dumps(rules)};
+
+async function loadEntities(){{
+  try {{
+    const r = await fetch(RULES_BASE + 'ha/entities').then(r=>r.json());
+    const dl = document.getElementById('entity-list');
+    dl.innerHTML = (r.entities || []).map(e => `<option value="${{e.entity_id}}">${{e.friendly_name||''}}</option>`).join('');
+  }} catch(e) {{}}
+}}
+loadEntities();
+
+function newRule(){{
+  document.getElementById('rule-modal-title').textContent = 'New rule';
+  const f = document.getElementById('rule-form');
+  f.reset();
+  f.elements.id.value = '';
+  f.elements.enabled.checked = true;
+  document.getElementById('rule-modal').style.display = 'flex';
+}}
+function editRule(id){{
+  const r = RULES_CACHE.find(x => x.id === id);
+  if (!r) return;
+  document.getElementById('rule-modal-title').textContent = 'Edit rule';
+  const f = document.getElementById('rule-form');
+  f.elements.id.value = r.id;
+  f.elements.name.value = r.name || '';
+  f.elements.entity_id.value = (r.trigger||{{}}).entity_id || '';
+  f.elements.from.value = (r.trigger||{{}}).from || '';
+  f.elements.to.value = (r.trigger||{{}}).to || '';
+  f.elements.message_template.value = r.message_template || '';
+  f.elements.ch_wa.checked = (r.channels||[]).includes('whatsapp');
+  f.elements.ch_tg.checked = (r.channels||[]).includes('telegram');
+  f.elements.wa_recipients.value = (r.wa_recipients||[]).join(', ');
+  f.elements.tg_chat_ids.value   = (r.tg_chat_ids||[]).join(', ');
+  f.elements.cooldown_seconds.value = r.cooldown_seconds || 30;
+  f.elements.enabled.checked = !!r.enabled;
+  document.getElementById('rule-modal').style.display = 'flex';
+}}
+function closeModal(){{ document.getElementById('rule-modal').style.display = 'none'; }}
+async function delRule(id){{
+  if (!confirm('Delete this rule?')) return;
+  await fetch(RULES_BASE + 'rules/delete', {{method:'POST', headers:{{'Content-Type':'application/json'}}, body: JSON.stringify({{id}})}});
+  location.reload();
+}}
+document.getElementById('rule-form').onsubmit = async (e) => {{
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  const channels = []; if (fd.get('ch_wa')) channels.push('whatsapp'); if (fd.get('ch_tg')) channels.push('telegram');
+  const payload = {{
+    id: fd.get('id') || ('rule-' + Math.random().toString(36).slice(2,9)),
+    name: fd.get('name'),
+    enabled: !!fd.get('enabled'),
+    trigger: {{ type: 'state_change', entity_id: fd.get('entity_id'), from: fd.get('from')||undefined, to: fd.get('to')||undefined }},
+    message_template: fd.get('message_template'),
+    channels,
+    wa_recipients: (fd.get('wa_recipients')||'').split(',').map(s=>s.trim()).filter(Boolean),
+    tg_chat_ids: (fd.get('tg_chat_ids')||'').split(',').map(s=>s.trim()).filter(Boolean),
+    cooldown_seconds: parseInt(fd.get('cooldown_seconds')||'0', 10),
+  }};
+  const r = await fetch(RULES_BASE + 'rules/save', {{method:'POST', headers:{{'Content-Type':'application/json'}}, body: JSON.stringify(payload)}}).then(r=>r.json());
+  if (r.ok) location.reload();
+  else alert('Save failed: ' + (r.error || 'unknown'));
+}};
+</script>
+"""
+
+def esc_html(s):
+    return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+
+def render_telegram_section(base_path="/"):
+    """Telegram setup panel. Owner pastes their own BotFather token + chat IDs."""
+    cfg     = load_telegram_config()
+    token   = cfg.get("bot_token", "")
+    botname = cfg.get("bot_username", "")
+    chatid  = cfg.get("default_chat_id", "")
+    masked  = (token[:8] + "…" + token[-4:]) if token else ""
+    status_html = (f'<div class="wa-status-row connected"><div class="dot"></div>'
+                   f'<div><div style="font-weight:700">Configured: @{botname or "—"}</div>'
+                   f'<div class="muted small">Token {masked}</div></div></div>') if token else \
+                  '<div class="wa-status-row waiting"><div class="dot"></div><div>No bot token configured yet. Get one from <a href="https://t.me/BotFather" target="_blank">@BotFather</a> in Telegram.</div></div>'
+    return f"""
+<div class="card" id="tg-card">
+  <div class="card-header"><span class="card-icon">💬</span>Telegram</div>
+  <p class="muted small">Use <strong>your own Telegram bot</strong> to deliver HA notifications. Create one via <a href="https://t.me/BotFather" target="_blank">@BotFather</a>, paste the token below.</p>
+  {status_html}
+  <form id="tg-form" style="margin-top:14px">
+    <label style="display:block;font-size:.8rem;color:var(--text2);margin-bottom:4px">Bot token</label>
+    <input name="bot_token" placeholder="123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11" value="{token}" style="width:100%;padding:9px 11px;background:var(--bg);border:1px solid #2a2f3c;border-radius:8px;color:var(--text);font-family:monospace;font-size:.85rem" />
+    <label style="display:block;font-size:.8rem;color:var(--text2);margin:10px 0 4px">Default chat ID (your personal chat, or a group's chat_id)</label>
+    <input name="default_chat_id" placeholder="123456789 or -100456789012" value="{chatid}" style="width:100%;padding:9px 11px;background:var(--bg);border:1px solid #2a2f3c;border-radius:8px;color:var(--text);font-family:monospace;font-size:.85rem" />
+    <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
+      <button class="btn btn-primary" type="submit">Verify &amp; save</button>
+      <button class="btn btn-ghost" type="button" onclick="tgTest()" {'disabled' if not token else ''}>Send test</button>
+    </div>
+    <div id="tg-result" class="muted small" style="margin-top:10px"></div>
+  </form>
+  <p class="muted small" style="margin-top:14px">📌 To get your chat_id: open <a href="https://t.me/userinfobot" target="_blank">@userinfobot</a> in Telegram, send /start. For a group, add the bot to the group and the chat_id will be negative.</p>
+</div>
+<script>
+const TG_BASE = '{base_path}';
+document.getElementById('tg-form').onsubmit = async (e) => {{
+  e.preventDefault();
+  const fd  = Object.fromEntries(new FormData(e.target));
+  const out = document.getElementById('tg-result');
+  out.textContent = 'Verifying token…';
+  const r = await fetch(TG_BASE + 'tg/verify-and-save', {{method:'POST', headers:{{'Content-Type':'application/json'}}, body: JSON.stringify(fd)}}).then(r=>r.json());
+  if (r.ok) {{
+    out.innerHTML = '✅ Saved. Bot: @' + r.bot_username;
+    setTimeout(() => location.reload(), 1500);
+  }} else {{
+    out.textContent = '❌ ' + (r.error || 'unknown');
+  }}
+}};
+async function tgTest(){{
+  const out = document.getElementById('tg-result');
+  out.textContent = 'Sending…';
+  const r = await fetch(TG_BASE + 'tg/test', {{method:'POST'}}).then(r=>r.json());
+  out.textContent = r.ok ? '✅ Test message sent to your default chat' : '❌ ' + (r.error || 'unknown');
+}}
 </script>
 """
 
@@ -821,7 +1061,22 @@ class IngressHandler(http.server.BaseHTTPRequestHandler):
             lic   = render_license_section()
             voice = render_voice_section()
             wa    = render_whatsapp_section(base_path=base)
-            self.send_html(200, page("Cinexis Setup", lic + wa + voice, base_path=base))
+            tg    = render_telegram_section(base_path=base)
+            rules = render_rules_section(base_path=base)
+            self.send_html(200, page("Cinexis Setup", lic + wa + tg + rules + voice, base_path=base))
+        elif path == "/ha/entities":
+            # Fetch the HA entity list so the rule editor can autocomplete.
+            try:
+                req = urllib.request.Request(
+                    "http://supervisor/core/api/states",
+                    headers={"Authorization": "Bearer " + get_supervisor_token()},
+                )
+                with urllib.request.urlopen(req, timeout=10) as r:
+                    states = json.loads(r.read().decode())
+                ents = [{"entity_id": s.get("entity_id"), "friendly_name": (s.get("attributes") or {}).get("friendly_name", "")} for s in states]
+                self.send_json(200, {"entities": ents})
+            except Exception as e:
+                self.send_json(200, {"entities": [], "error": str(e)})
         elif path == "/wa/status":
             self.send_json(200, wa_service_call("GET", "/status"))
         elif path == "/wa/qr":
@@ -875,6 +1130,73 @@ class IngressHandler(http.server.BaseHTTPRequestHandler):
                 prof["chosen_billing"]         = payload.get("billing_period")
                 save_customer_profile(prof)
             return self.send_json(200, resp)
+
+        # ── Notification rules CRUD ───────────────────────────────────────
+        if path == "/rules/save":
+            try:    payload = json.loads(self.read_body() or b"{}")
+            except: return self.send_json(400, {"ok": False, "error": "bad_json"})
+            if not payload.get("id") or not payload.get("name") or not (payload.get("trigger") or {}).get("entity_id"):
+                return self.send_json(400, {"ok": False, "error": "id_name_entity_required"})
+            rules = load_rules()
+            # Upsert
+            idx = next((i for i, r in enumerate(rules) if r.get("id") == payload["id"]), -1)
+            if idx >= 0: rules[idx] = payload
+            else:        rules.append(payload)
+            save_rules(rules)
+            return self.send_json(200, {"ok": True, "count": len(rules)})
+
+        if path == "/rules/delete":
+            try:    payload = json.loads(self.read_body() or b"{}")
+            except: return self.send_json(400, {"ok": False, "error": "bad_json"})
+            if not payload.get("id"): return self.send_json(400, {"ok": False, "error": "id_required"})
+            rules = load_rules()
+            rules = [r for r in rules if r.get("id") != payload["id"]]
+            save_rules(rules)
+            return self.send_json(200, {"ok": True, "count": len(rules)})
+
+        # ── Telegram bot config + send ────────────────────────────────────
+        if path == "/tg/verify-and-save":
+            try:    payload = json.loads(self.read_body() or b"{}")
+            except: payload = {}
+            token = (payload.get("bot_token") or "").strip()
+            chat  = (payload.get("default_chat_id") or "").strip()
+            if not token:
+                return self.send_json(400, {"ok": False, "error": "bot_token required"})
+            # Verify token via getMe
+            res = telegram_api("getMe", bot_token=token)
+            if not res.get("ok"):
+                return self.send_json(400, {"ok": False, "error": res.get("description") or res.get("error") or "invalid_token"})
+            bot = res.get("result") or {}
+            save_telegram_config({
+                "bot_token":       token,
+                "bot_username":    bot.get("username"),
+                "bot_id":          bot.get("id"),
+                "default_chat_id": chat,
+                "saved_at":        datetime.now(timezone.utc).isoformat(),
+            })
+            return self.send_json(200, {"ok": True, "bot_username": bot.get("username")})
+
+        if path == "/tg/test":
+            cfg = load_telegram_config()
+            if not cfg.get("bot_token") or not cfg.get("default_chat_id"):
+                return self.send_json(400, {"ok": False, "error": "token_or_chat_id_missing"})
+            res = telegram_api("sendMessage", payload={
+                "chat_id": cfg["default_chat_id"],
+                "text":    f"🧪 Cinexis Telegram test at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} — your bot is wired up correctly.",
+            })
+            return self.send_json(200, {"ok": bool(res.get("ok")), "error": res.get("description") or res.get("error")})
+
+        if path == "/tg/send":
+            try:    payload = json.loads(self.read_body() or b"{}")
+            except: payload = {}
+            cfg = load_telegram_config()
+            if not cfg.get("bot_token"):
+                return self.send_json(400, {"ok": False, "error": "bot_not_configured"})
+            chat = payload.get("chat_id") or cfg.get("default_chat_id")
+            if not chat or not payload.get("text"):
+                return self.send_json(400, {"ok": False, "error": "chat_id_and_text_required"})
+            res = telegram_api("sendMessage", payload={"chat_id": chat, "text": payload["text"]})
+            return self.send_json(200, {"ok": bool(res.get("ok")), "error": res.get("description") or res.get("error")})
 
         # ── WhatsApp service proxy (Node Baileys at 127.0.0.1:18083) ──────
         if path == "/wa/test":

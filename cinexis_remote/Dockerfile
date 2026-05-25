@@ -12,7 +12,12 @@ RUN apk add --no-cache \
     nodejs \
     npm \
     openssl \
-    python3
+    python3 \
+    py3-pip
+
+# Python WebSocket client for cinexis-events.py (HA event listener)
+RUN pip3 install --no-cache-dir --break-system-packages \
+    'websocket-client==1.8.0'
 
 # ── frpc binary ───────────────────────────────────────────────────────────────
 ARG BUILD_ARCH
@@ -43,6 +48,7 @@ RUN apk add --no-cache --virtual .build-deps git make g++ python3-dev \
 # ── Permissions ───────────────────────────────────────────────────────────────
 RUN chmod +x /usr/bin/cinexis-entrypoint.sh \
               /usr/bin/cinexis-alexa.py \
-              /usr/bin/cinexis-ingress.py
+              /usr/bin/cinexis-ingress.py \
+              /usr/bin/cinexis-events.py
 
 CMD ["/usr/bin/cinexis-entrypoint.sh"]
