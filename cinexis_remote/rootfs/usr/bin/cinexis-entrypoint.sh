@@ -24,6 +24,8 @@ INGRESS_PID=""
 CLEAN_SHUTDOWN=false
 ALEXA_PORT=18081
 INGRESS_PORT="${INGRESS_PORT:-18082}"
+WA_PORT="${WA_PORT:-18083}"
+WA_PID=""
 
 # ── Alexa backend selection (from options.json) ───────────────────────────────
 # alexa_backend: "self" (addon handles Alexa) or "bot" (proxy to cinexis-bot)
@@ -295,6 +297,30 @@ start_ingress() {
     fi
 }
 
+# ── WhatsApp Web service (Baileys) ─────────────────────────────────────────────
+# Hosts the owner's own personal WhatsApp Web session. Started once at boot;
+# the Node process auto-reconnects with backoff if WhatsApp drops the link.
+# Auth lives in /share/cinexis/wa-auth so a pairing survives addon updates.
+start_wa() {
+    if [ ! -f /usr/lib/cinexis-wa/cinexis-wa.js ]; then
+        warn "cinexis-wa.js not installed — WhatsApp notifications disabled"
+        return
+    fi
+    log "Starting WhatsApp Web service on port ${WA_PORT}..."
+    cd /usr/lib/cinexis-wa
+    WA_PORT="${WA_PORT}" WA_AUTH_DIR="${STORAGE_DIR}/wa-auth" \
+        node cinexis-wa.js >> "${STORAGE_DIR}/cinexis-wa.log" 2>&1 &
+    WA_PID=$!
+    cd - > /dev/null
+    sleep 2
+    if kill -0 "${WA_PID}" 2>/dev/null; then
+        log "✅ WhatsApp Web service running (pid ${WA_PID}) — open addon UI to scan QR"
+    else
+        warn "WhatsApp Web service failed to start — check ${STORAGE_DIR}/cinexis-wa.log"
+        WA_PID=""
+    fi
+}
+
 # ── Alexa backend: write conditional nginx proxy config ──────────────────────
 # When alexa_backend=bot, nginx (on port 18081) forwards /voice/alexa/internal
 # to the cinexis-bot at BOT_HOST. The bot's alexa_device_secret must match
@@ -371,13 +397,14 @@ cleanup() {
     [ -n "${HEARTBEAT_PID:-}" ] && kill "${HEARTBEAT_PID}"  2>/dev/null || true
     [ -n "${ALEXA_PID}" ]       && kill "${ALEXA_PID}"      2>/dev/null || true
     [ -n "${INGRESS_PID}" ]     && kill "${INGRESS_PID}"    2>/dev/null || true
+    [ -n "${WA_PID}" ]          && kill "${WA_PID}"         2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 main() {
     log "=========================================="
-    log " Cinexis Remote Access v1.10.0"
+    log " Cinexis Remote Access v1.11.0-dev"
     log " + Alexa Smart Home Integration"
     log " + Ingress Management UI"
     log "=========================================="
@@ -417,6 +444,7 @@ main() {
     # Start Alexa handler (before FRP) so it's ready when tunnel connects
     write_alexa_proxy_config
     start_alexa_handler
+    start_wa
 
     start_nginx
     start_frpc

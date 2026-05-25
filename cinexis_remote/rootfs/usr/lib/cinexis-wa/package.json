@@ -1,0 +1,19 @@
+{
+  "name": "cinexis-wa",
+  "version": "1.11.0",
+  "private": true,
+  "description": "Local WhatsApp Web service for the Cinexis HA addon — owner scans QR with their own WhatsApp, addon sends HA event notifications from that number.",
+  "main": "cinexis-wa.js",
+  "scripts": {
+    "start": "node cinexis-wa.js"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.18",
+    "express": "^4.21.1",
+    "pino": "^9.5.0",
+    "qrcode": "^1.5.4"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

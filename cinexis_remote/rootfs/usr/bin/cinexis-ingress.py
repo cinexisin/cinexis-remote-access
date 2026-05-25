@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 
 # ── Config ────────────────────────────────────────────────────────────────────
 PORT              = int(os.environ.get("INGRESS_PORT", "18082"))
+WA_SERVICE_URL    = os.environ.get("WA_SERVICE_URL", "http://127.0.0.1:18083")
 STORAGE_DIR       = "/share/cinexis"
 LICENSE_KEY_FILE  = f"{STORAGE_DIR}/license_key"
 EXCLUSIONS_FILE   = f"{STORAGE_DIR}/voice_exclusions.json"
@@ -144,6 +145,26 @@ def cinexis_addon_call(method, path, payload=None):
         except: return {"ok": False, "error": f"http_{e.code}"}
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
+def wa_service_call(method, path, payload=None):
+    """Proxy a request to the local Baileys service (cinexis-wa.js on 127.0.0.1:18083).
+    Returns parsed JSON or an {ok:False, error:...} stub on network failure.
+    """
+    url = WA_SERVICE_URL + path
+    try:
+        if method == "GET":
+            req = urllib.request.Request(url, method="GET")
+        else:
+            data = json.dumps(payload or {}).encode()
+            req = urllib.request.Request(url, data=data, method=method,
+                                          headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return json.loads(r.read().decode())
+    except urllib.error.HTTPError as e:
+        try:    return json.loads(e.read().decode())
+        except: return {"ok": False, "error": f"http_{e.code}"}
+    except Exception as e:
+        return {"ok": False, "error": f"wa_service_unreachable: {e}"}
 
 def cinexis_post(path, payload):
     body = json.dumps(payload).encode()
@@ -320,23 +341,21 @@ def render_onboarding_wizard(base_path="/", error=""):
     <div id="poll-status" class="muted small" style="margin-top:14px"></div>
   </section>
 
-  <!-- ── D. Notifications ────────────────────────────────────────────── -->
+  <!-- ── D. Notifications (coming in v1.11 — Baileys-based local WA Web) ── -->
   <section id="sec-d">
-    <h2>Get alerts on WhatsApp / Telegram</h2>
-    <p class="muted">Face recognition events, door unlocks, bot offline alerts — pushed to your phone in real time. Skip if you don't want them.</p>
-    <div class="qr-area">
-      <div class="qr-card">
-        <h3>📱 WhatsApp</h3>
-        <div id="wa-qr" class="qr-placeholder">Click to generate</div>
-        <button class="btn ghost small" data-channel="whatsapp">Get WhatsApp link</button>
-      </div>
-      <div class="qr-card">
-        <h3>💬 Telegram</h3>
-        <div id="tg-qr" class="qr-placeholder">Click to generate</div>
-        <button class="btn ghost small" data-channel="telegram">Get Telegram link</button>
-      </div>
-    </div>
-    <button id="finish" class="btn big">All done — open dashboard →</button>
+    <h2>Notifications</h2>
+    <p>Configure your HA event → WhatsApp / Telegram notifications in the next addon update (v1.11).</p>
+    <p class="muted">You'll be able to:</p>
+    <ul class="muted">
+      <li>Scan a QR with <strong>your own WhatsApp</strong> — messages go from <em>your</em> number, not ours</li>
+      <li>Paste your <strong>own Telegram bot token</strong> for Telegram alerts</li>
+      <li>Pick which HA entities trigger notifications (lights, doors, motion, automations, batteries…)</li>
+      <li>Custom message templates per trigger</li>
+      <li>Daily morning summary report</li>
+      <li>Per-recipient routing (you, family group, security guard, etc.)</li>
+    </ul>
+    <p class="muted small">Account setup is now complete — your trial is active. Click below to open the dashboard.</p>
+    <button id="finish" class="btn big">Open dashboard →</button>
   </section>
 </div>
 
@@ -439,23 +458,101 @@ async function pollStatus(){{
   }}, 5000);
 }}
 
-// Step D — notification QRs
-$$('.qr-card button').forEach(btn => btn.onclick = async () => {{
-  const ch = btn.dataset.channel; btn.disabled = true; btn.textContent = 'Generating…';
-  const r = await fetch(BASE+'wizard/notif', {{method:'POST', headers:{{'Content-Type':'application/json'}}, body: JSON.stringify({{channel: ch}})}}).then(r=>r.json());
-  if (r.ok && r.deep_link) {{
-    const tgt = $('#'+(ch==='whatsapp'?'wa-qr':'tg-qr'));
-    // QR via Google Chart API (free, no signup)
-    tgt.innerHTML = '<a href="' + r.deep_link + '" target="_blank">'
-      + '<img src="https://api.qrserver.com/v1/create-qr-code/?size=140x140&data=' + encodeURIComponent(r.deep_link) + '" alt="QR" style="background:#fff;padding:6px;border-radius:6px"></a>'
-      + '<div style="margin-top:6px;font-size:.75rem"><a href="' + r.deep_link + '" target="_blank">Or tap here</a></div>';
-    btn.textContent = '↻ Regenerate'; btn.disabled = false;
-  }} else {{
-    alert('Could not generate ' + ch + ' link: ' + (r.error || 'unknown'));
-    btn.disabled = false; btn.textContent = 'Get ' + ch + ' link';
-  }}
-}});
+// Step D — placeholder until v1.11 ships the Baileys-based WA Web + TG flow.
 $('#finish').onclick = () => location.href = BASE;
+</script>
+"""
+
+def render_whatsapp_section(base_path="/"):
+    """WhatsApp pairing/status panel. Polls /wa/status every 5s via JS.
+
+    First-pair flow:
+      1. Service starts → QR appears in /wa/qr — UI displays it
+      2. Owner scans with their WhatsApp → /wa/status returns connected=true
+      3. UI switches to "Connected as +XX..." + Send-test form + Logout
+
+    The Node service auto-reconnects so we don't expose a "reconnect" button.
+    """
+    return f"""
+<div class="card" id="wa-card">
+  <div class="card-header"><span class="card-icon">📱</span>WhatsApp</div>
+  <p class="muted small">Pair your <strong>own</strong> WhatsApp once — the addon will send your Home Assistant notifications from this number.</p>
+  <div id="wa-body">
+    <div class="muted small">⏳ Loading WhatsApp service status…</div>
+  </div>
+</div>
+<style>
+  #wa-qr-img {{ background:#fff; padding:10px; border-radius:10px; display:block; margin:14px auto; max-width: 280px; width:80% }}
+  .wa-status-row {{ display:flex; gap:12px; align-items:center; padding:14px; background:var(--bg); border-radius:10px; margin:12px 0 }}
+  .wa-status-row .dot {{ width:10px; height:10px; border-radius:50%; flex-shrink:0 }}
+  .wa-status-row.connected .dot {{ background:#22c55e; box-shadow:0 0 0 3px rgba(34,197,94,.2) }}
+  .wa-status-row.waiting   .dot {{ background:#eab308 }}
+  .wa-status-row.error     .dot {{ background:#ef4444 }}
+  .wa-test-form {{ display:flex; gap:8px; margin-top:12px; flex-wrap:wrap }}
+  .wa-test-form input {{ flex:1 1 200px; padding:8px 10px; border:1px solid #2a2f3c; background:var(--bg); border-radius:8px; color:var(--text); font-size:.88rem }}
+  .wa-test-form button {{ padding:8px 14px }}
+</style>
+<script>
+const WA_BASE = '{base_path}';
+async function waRefreshStatus(){{
+  const body = document.getElementById('wa-body');
+  try {{
+    const s = await fetch(WA_BASE + 'wa/status').then(r => r.json());
+    if (s.error && s.error.startsWith('wa_service_unreachable')) {{
+      body.innerHTML = '<div class="wa-status-row error"><div class="dot"></div><div>WhatsApp service not running. Check the addon log.</div></div>';
+      return;
+    }}
+    if (s.connected) {{
+      body.innerHTML = `
+        <div class="wa-status-row connected">
+          <div class="dot"></div>
+          <div>
+            <div style="font-weight:700">Connected as +${{s.phone}}</div>
+            <div class="muted small">Since ${{new Date(s.since).toLocaleString()}}</div>
+          </div>
+        </div>
+        <form class="wa-test-form" onsubmit="return waSendTest(event)">
+          <input name="to"   placeholder="Send test to (default: your own number)" />
+          <input name="text" placeholder="Message text"  value="🧪 Cinexis test message" />
+          <button class="btn btn-primary" type="submit">Send</button>
+        </form>
+        <div id="wa-test-result" class="muted small" style="margin-top:8px"></div>
+        <button class="btn btn-ghost" style="margin-top:14px" onclick="waLogout()">Log out / re-pair</button>
+      `;
+      return;
+    }}
+    if (s.has_qr) {{
+      const qr = await fetch(WA_BASE + 'wa/qr').then(r => r.json());
+      if (qr.qr_data_url) {{
+        body.innerHTML = `
+          <div class="wa-status-row waiting"><div class="dot"></div><div>Waiting for QR scan — open WhatsApp → ⋮ → Linked devices → Link a device</div></div>
+          <img id="wa-qr-img" src="${{qr.qr_data_url}}" alt="WhatsApp pairing QR" />
+          <p class="muted small" style="text-align:center">QR refreshes automatically every few seconds.</p>
+        `;
+        return;
+      }}
+    }}
+    body.innerHTML = '<div class="wa-status-row waiting"><div class="dot"></div><div>Starting up — a fresh QR will appear here in a few seconds.</div></div>';
+  }} catch (e) {{
+    body.innerHTML = '<div class="wa-status-row error"><div class="dot"></div><div>Could not reach the WhatsApp service: ' + e.message + '</div></div>';
+  }}
+}}
+async function waSendTest(ev){{
+  ev.preventDefault();
+  const fd = Object.fromEntries(new FormData(ev.target));
+  const out = document.getElementById('wa-test-result');
+  out.textContent = 'Sending…';
+  const r = await fetch(WA_BASE + 'wa/test', {{method:'POST', headers:{{'Content-Type':'application/json'}}, body: JSON.stringify(fd)}}).then(r=>r.json());
+  out.textContent = r.ok ? `✅ Sent to ${{r.sent_to}}` : '❌ ' + (r.error || 'unknown');
+  return false;
+}}
+async function waLogout(){{
+  if (!confirm('Log out the linked WhatsApp? You will need to scan a new QR.')) return;
+  await fetch(WA_BASE + 'wa/logout', {{method:'POST'}});
+  setTimeout(waRefreshStatus, 1500);
+}}
+waRefreshStatus();
+setInterval(waRefreshStatus, 5000);
 </script>
 """
 
@@ -723,7 +820,12 @@ class IngressHandler(http.server.BaseHTTPRequestHandler):
                 return
             lic   = render_license_section()
             voice = render_voice_section()
-            self.send_html(200, page("Cinexis Setup", lic + voice, base_path=base))
+            wa    = render_whatsapp_section(base_path=base)
+            self.send_html(200, page("Cinexis Setup", lic + wa + voice, base_path=base))
+        elif path == "/wa/status":
+            self.send_json(200, wa_service_call("GET", "/status"))
+        elif path == "/wa/qr":
+            self.send_json(200, wa_service_call("GET", "/qr"))
         elif path == "/wizard/status":
             # Addon-side proxy of /api/addon/status so the JS can poll over
             # ingress (cross-origin to cinexis.cloud would need CORS).
@@ -774,13 +876,21 @@ class IngressHandler(http.server.BaseHTTPRequestHandler):
                 save_customer_profile(prof)
             return self.send_json(200, resp)
 
-        if path == "/wizard/notif":
-            try:
-                payload = json.loads(self.read_body() or b"{}")
-            except Exception:
-                return self.send_json(400, {"ok": False, "error": "bad_json"})
-            resp = cinexis_addon_call("POST", "/notif/link-token", payload)
-            return self.send_json(200, resp)
+        # ── WhatsApp service proxy (Node Baileys at 127.0.0.1:18083) ──────
+        if path == "/wa/test":
+            try:    payload = json.loads(self.read_body() or b"{}")
+            except: payload = {}
+            return self.send_json(200, wa_service_call("POST", "/test", payload))
+        if path == "/wa/send/text":
+            try:    payload = json.loads(self.read_body() or b"{}")
+            except: payload = {}
+            return self.send_json(200, wa_service_call("POST", "/send/text", payload))
+        if path == "/wa/send/image":
+            try:    payload = json.loads(self.read_body() or b"{}")
+            except: payload = {}
+            return self.send_json(200, wa_service_call("POST", "/send/image", payload))
+        if path == "/wa/logout":
+            return self.send_json(200, wa_service_call("POST", "/logout"))
 
         if path == "/license/send-otp":
             form = self.parse_form()

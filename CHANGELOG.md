@@ -5,6 +5,49 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.11.0-dev] - 2026-05-25 (work in progress)
+
+### Added — Phase 1: WhatsApp Web (Baileys) pairing
+
+This release introduces the **GreenAPI-style** notification stack: the owner
+pairs their own personal WhatsApp once via the addon UI, and from then on
+the addon sends Home Assistant event notifications **from the owner's
+WhatsApp number** to whoever they configure. Nothing routes through
+cinexis.cloud — all local.
+
+- New Node.js 20 service `/usr/lib/cinexis-wa/cinexis-wa.js` that wraps
+  [@whiskeysockets/baileys](https://github.com/WhiskeySockets/Baileys).
+  Auth state persisted to `/share/cinexis/wa-auth/` (survives addon
+  updates). Auto-reconnect with exponential backoff. HTTP control surface
+  on `127.0.0.1:18083` — only the addon's Python ingress talks to it.
+- HTTP API: `GET /status`, `GET /qr`, `POST /send/text`, `POST /send/image`,
+  `POST /test`, `POST /logout`.
+- Addon UI now has a **WhatsApp** card on the dashboard. While unpaired
+  it shows a QR; after pairing it shows "Connected as +XX…" plus a
+  test-send form. Logout button wipes auth and re-renders the QR.
+- New `/wa/*` proxy routes in `cinexis-ingress.py` so the browser can
+  talk to the local Node service through the HA ingress without exposing
+  port 18083 outside the container.
+- `Dockerfile` now installs nodejs + npm and `npm install --omit=dev`s
+  the WA service at build time. ~30 MB image growth.
+
+### Removed
+- The old wizard step D "Get WhatsApp / Telegram link" — that flow routed
+  every notification through *our* central Cinexis WhatsApp Business
+  number, which was the wrong architecture for an addon meant to be
+  used like GreenAPI. The new flow uses the owner's own WA via Baileys.
+- Cloud-side `/api/addon/notif/link-token`,
+  `/api/addon/notif/redeem-telegram`, and the inbound `LINK-XXXX`
+  webhook handler.
+
+### Coming in subsequent commits (still v1.11.0-dev)
+- Telegram setup (owner pastes their own bot token in the addon UI)
+- HA WebSocket event listener service (`cinexis-events.py`)
+- Notification rules CRUD editor (entity / state / cooldown / template / recipients)
+- Daily morning summary report
+
+---
+
 ## [1.10.0] - 2026-05-24
 
 ### Added
