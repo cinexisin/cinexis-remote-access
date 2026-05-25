@@ -5,7 +5,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
-## [1.11.0-dev] - 2026-05-25 (work in progress)
+## [1.11.0] - 2026-05-25
 
 ### Added — Phase 1: WhatsApp Web (Baileys) pairing
 

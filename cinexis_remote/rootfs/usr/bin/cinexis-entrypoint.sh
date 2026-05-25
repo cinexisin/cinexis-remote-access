@@ -404,7 +404,7 @@ trap cleanup EXIT INT TERM
 # ── Main ───────────────────────────────────────────────────────────────────────
 main() {
     log "=========================================="
-    log " Cinexis Remote Access v1.11.0-dev"
+    log " Cinexis Remote Access v1.11.0"
     log " + Alexa Smart Home Integration"
     log " + Ingress Management UI"
     log "=========================================="
