@@ -5,6 +5,35 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.11.2] - 2026-05-25
+
+### Added — Daily summary report
+
+Closes Phase 2 of v1.11. The addon now sends a once-a-day summary at a
+configurable time (default 08:00 local) covering: state-change count per
+tracked entity, currently-low batteries, current state of each entity.
+
+- New dashboard card **"📊 Daily Summary Report"** — enable / time picker /
+  battery threshold / multi-line entity list / WA + TG recipients /
+  *Send now (test)* button.
+- `cinexis-events.py` now spawns a `daily_loop` thread (1-minute cron
+  resolution). Checks the configured time daily, builds the summary by
+  hitting HA's `/api/history/period?filter_entity_id=…` for the last 24 h,
+  fires via the local WA + Telegram senders. Idempotent — `daily_summary_last.json`
+  stores the date already sent so we don't fire twice.
+- Storage: `/share/cinexis/daily_summary.json`.
+
+### Phase 2 complete
+The addon notification stack started in v1.10 with the wrong cloud-relay
+model and pivoted in v1.11 to GreenAPI-style local sending is now
+end-to-end:
+  - WhatsApp pairing via Baileys ✅
+  - Telegram bot token setup ✅
+  - Event-triggered rules (HA WebSocket) ✅
+  - Daily summary report ✅
+
+---
+
 ## [1.11.1] - 2026-05-25
 
 ### Added — Phase 2: Telegram + HA events + rules editor

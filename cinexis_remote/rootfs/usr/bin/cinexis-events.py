@@ -35,10 +35,14 @@ except ImportError:
 STORAGE_DIR        = "/share/cinexis"
 RULES_FILE         = f"{STORAGE_DIR}/notification_rules.json"
 LAST_FIRED_FILE    = f"{STORAGE_DIR}/notification_rules_last_fired.json"
+DAILY_FILE         = f"{STORAGE_DIR}/daily_summary.json"
+DAILY_LAST_FILE    = f"{STORAGE_DIR}/daily_summary_last.json"
 HA_WS_URL          = "ws://supervisor/core/api/websocket"
+HA_REST_URL        = "http://supervisor/core"
 WA_SERVICE_URL     = "http://127.0.0.1:18083"
 INGRESS_URL        = "http://127.0.0.1:18082"   # for Telegram proxy
 RULES_RELOAD_SEC   = 30
+DAILY_CHECK_SEC    = 60                          # cron resolution
 HEARTBEAT_SEC      = 30
 
 def log(msg):  print(f"[CINEXIS-EVENTS] {msg}", flush=True)
@@ -255,11 +259,105 @@ def ws_loop():
             except Exception: pass
             time.sleep(10)
 
+# ── Daily summary scheduler ──────────────────────────────────────────────────
+def load_daily_config():
+    try:
+        with open(DAILY_FILE) as f: return json.load(f)
+    except Exception: return {}
+
+def load_daily_last_sent_date():
+    try:
+        with open(DAILY_LAST_FILE) as f: return json.load(f).get("date", "")
+    except Exception: return ""
+
+def save_daily_last_sent_date(d):
+    try:
+        with open(DAILY_LAST_FILE, "w") as f: json.dump({"date": d}, f)
+    except Exception as e: warn(f"daily_last save: {e}")
+
+def fetch_ha_history(entity_ids, hours=24):
+    """Pull the last N hours of state changes for the given entities from HA."""
+    if not entity_ids: return []
+    token = get_supervisor_token()
+    if not token: return []
+    start = (datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00","Z"))
+    # Use the 24-hours-ago timestamp
+    from datetime import timedelta
+    since = (datetime.now(timezone.utc) - timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%S%z")
+    # HA accepts ISO timestamp in URL
+    url = f"{HA_REST_URL}/api/history/period/{since}?filter_entity_id={','.join(entity_ids)}&minimal_response&no_attributes"
+    try:
+        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+        with urllib.request.urlopen(req, timeout=20) as r:
+            return json.loads(r.read().decode())
+    except Exception as e:
+        warn(f"history fetch failed: {e}")
+        return []
+
+def build_summary_text(cfg):
+    """Compose the daily summary as plain text."""
+    entities = cfg.get("entities") or []
+    history  = fetch_ha_history(entities, hours=24) if entities else []
+    lines = [f"📊 Cinexis daily summary — {datetime.now().strftime('%a %d %b %Y')}", ""]
+    if not history:
+        lines.append("(No entities tracked yet — open the addon to set up daily summary.)")
+    else:
+        # history is a list of lists (one per entity); count transitions
+        # and report battery levels currently below the threshold
+        battery_low_thresh = int(cfg.get("battery_low_pct") or 20)
+        for entity_history in history:
+            if not entity_history: continue
+            eid       = entity_history[0].get("entity_id", "")
+            states    = [h.get("state") for h in entity_history]
+            transitions = sum(1 for a, b in zip(states, states[1:]) if a != b)
+            current   = states[-1] if states else "?"
+            label     = eid.replace("_", " ").split(".")[-1].title()
+            # Special handling for battery sensors
+            if "battery" in eid.lower():
+                try:
+                    pct = int(float(current))
+                    if pct <= battery_low_thresh:
+                        lines.append(f"🔋 {label}: {pct}% (low!)")
+                except Exception:
+                    pass
+            else:
+                lines.append(f"• {label}: {transitions}× changes, now {current}")
+    lines.append("")
+    lines.append("— Cinexis")
+    return "\n".join(lines)
+
+def maybe_send_daily_summary():
+    cfg = load_daily_config()
+    if not cfg.get("enabled"): return
+    schedule_time = cfg.get("time") or "08:00"            # HH:MM
+    now_local = datetime.now()
+    today_str = now_local.strftime("%Y-%m-%d")
+    last_sent = load_daily_last_sent_date()
+    if last_sent == today_str: return                      # already sent today
+    if now_local.strftime("%H:%M") < schedule_time: return # not yet
+    log(f"firing daily summary for {today_str}")
+    text = build_summary_text(cfg)
+    for to in cfg.get("wa_recipients") or []:
+        r = send_whatsapp(to, text)
+        log(f"daily WA → {to}: {'ok' if r.get('ok') else 'fail:' + str(r.get('error'))}")
+    for chat in cfg.get("tg_chat_ids") or []:
+        r = send_telegram(chat, text)
+        log(f"daily TG → {chat}: {'ok' if r.get('ok') else 'fail:' + str(r.get('error'))}")
+    save_daily_last_sent_date(today_str)
+
+def daily_loop():
+    """Check every minute whether daily summary needs to fire."""
+    while True:
+        try: maybe_send_daily_summary()
+        except Exception as e: warn(f"daily loop: {e}")
+        time.sleep(DAILY_CHECK_SEC)
+
 def main():
     log("starting Cinexis HA event listener")
     if not os.path.exists(STORAGE_DIR):
         os.makedirs(STORAGE_DIR, exist_ok=True)
     threading.Thread(target=rules_reload_loop, daemon=True).start()
+    threading.Thread(target=daily_loop,         daemon=True).start()
     ws_loop()
 
 if __name__ == "__main__":

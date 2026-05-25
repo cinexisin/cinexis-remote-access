@@ -26,6 +26,7 @@ DEVICE_SECRET_FILE= f"{STORAGE_DIR}/device_secret"
 CUSTOMER_PROFILE_FILE = f"{STORAGE_DIR}/customer_profile.json"
 TELEGRAM_CONFIG_FILE  = f"{STORAGE_DIR}/telegram_config.json"
 RULES_FILE            = f"{STORAGE_DIR}/notification_rules.json"
+DAILY_FILE            = f"{STORAGE_DIR}/daily_summary.json"
 HA_BASE           = "http://supervisor/core"
 CINEXIS_API       = "https://cinexis.cloud"
 
@@ -147,6 +148,16 @@ def cinexis_addon_call(method, path, payload=None):
         except: return {"ok": False, "error": f"http_{e.code}"}
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
+def load_daily_config():
+    try:
+        with open(DAILY_FILE) as f: return json.load(f)
+    except Exception: return {}
+
+def save_daily_config(data):
+    os.makedirs(STORAGE_DIR, exist_ok=True)
+    with open(DAILY_FILE, "w") as f:
+        json.dump(data, f, indent=2)
 
 def load_rules():
     try:
@@ -509,6 +520,70 @@ async function pollStatus(){{
 
 // Step D — placeholder until v1.11 ships the Baileys-based WA Web + TG flow.
 $('#finish').onclick = () => location.href = BASE;
+</script>
+"""
+
+def render_daily_section(base_path="/"):
+    """Daily summary report config — fires once per day at configured time.
+
+    Owner picks: enable, time HH:MM, entities to include, recipients.
+    cinexis-events.py daily_loop() checks every minute and fires when due.
+    """
+    cfg     = load_daily_config()
+    enabled = "checked" if cfg.get("enabled") else ""
+    tm      = cfg.get("time", "08:00")
+    ents    = "\n".join(cfg.get("entities") or [])
+    wa_r    = ", ".join(cfg.get("wa_recipients") or [])
+    tg_r    = ", ".join(cfg.get("tg_chat_ids") or [])
+    bat     = cfg.get("battery_low_pct") or 20
+    return f"""
+<div class="card" id="daily-card">
+  <div class="card-header"><span class="card-icon">📊</span>Daily Summary Report</div>
+  <p class="muted small">Once a day at the time you set, fire a recap of the previous 24 h — state changes per entity, low batteries flagged. Goes to the same WA / TG you configure here.</p>
+  <form id="daily-form">
+    <label style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+      <input type="checkbox" name="enabled" {enabled}> Enabled
+    </label>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+      <div><label style="font-size:.8rem;color:var(--text2)">Send at (HH:MM, local time)</label><input name="time" type="time" value="{tm}" style="width:100%;padding:8px;background:var(--bg);border:1px solid #2a2f3c;border-radius:6px;color:var(--text)"></div>
+      <div><label style="font-size:.8rem;color:var(--text2)">Low battery threshold (%)</label><input name="battery_low_pct" type="number" value="{bat}" min="1" max="100" style="width:100%;padding:8px;background:var(--bg);border:1px solid #2a2f3c;border-radius:6px;color:var(--text)"></div>
+    </div>
+    <label style="font-size:.8rem;color:var(--text2)">Entities to include (one per line) — try <code>binary_sensor.*</code>, <code>sensor.*_battery</code>, doors, motion, automations</label>
+    <textarea name="entities" rows="6" placeholder="binary_sensor.front_door&#10;binary_sensor.kitchen_motion&#10;sensor.living_room_battery&#10;automation.morning_routine" style="width:100%;padding:8px;background:var(--bg);border:1px solid #2a2f3c;border-radius:6px;color:var(--text);font-family:monospace;font-size:.85rem;margin-bottom:10px">{esc_html(ents)}</textarea>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+      <div><label style="font-size:.8rem;color:var(--text2)">WhatsApp recipients</label><input name="wa_recipients" value="{esc_html(wa_r)}" placeholder="918792962291" style="width:100%;padding:8px;background:var(--bg);border:1px solid #2a2f3c;border-radius:6px;color:var(--text);margin-bottom:10px"></div>
+      <div><label style="font-size:.8rem;color:var(--text2)">Telegram chat IDs</label><input name="tg_chat_ids" value="{esc_html(tg_r)}" placeholder="123456789" style="width:100%;padding:8px;background:var(--bg);border:1px solid #2a2f3c;border-radius:6px;color:var(--text);margin-bottom:10px"></div>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
+      <button class="btn btn-primary" type="submit">Save</button>
+      <button class="btn btn-ghost" type="button" onclick="dailyTest()">Send now (test)</button>
+    </div>
+    <div id="daily-result" class="muted small" style="margin-top:10px"></div>
+  </form>
+</div>
+<script>
+const DAILY_BASE = '{base_path}';
+document.getElementById('daily-form').onsubmit = async (e) => {{
+  e.preventDefault();
+  const fd = Object.fromEntries(new FormData(e.target));
+  const payload = {{
+    enabled: !!fd.enabled,
+    time:    fd.time || '08:00',
+    battery_low_pct: parseInt(fd.battery_low_pct || '20', 10),
+    entities: (fd.entities || '').split('\\n').map(s=>s.trim()).filter(Boolean),
+    wa_recipients: (fd.wa_recipients||'').split(',').map(s=>s.trim()).filter(Boolean),
+    tg_chat_ids:   (fd.tg_chat_ids||'').split(',').map(s=>s.trim()).filter(Boolean),
+  }};
+  const r = await fetch(DAILY_BASE + 'daily/save', {{method:'POST', headers:{{'Content-Type':'application/json'}}, body: JSON.stringify(payload)}}).then(r=>r.json());
+  const out = document.getElementById('daily-result');
+  out.textContent = r.ok ? '✅ Saved' : '❌ ' + (r.error || 'unknown');
+}};
+async function dailyTest(){{
+  const out = document.getElementById('daily-result');
+  out.textContent = 'Sending test…';
+  const r = await fetch(DAILY_BASE + 'daily/test', {{method:'POST'}}).then(r=>r.json());
+  out.textContent = r.ok ? '✅ Test summary sent — check WhatsApp / Telegram' : '❌ ' + (r.error || 'unknown');
+}}
 </script>
 """
 
@@ -1063,7 +1138,8 @@ class IngressHandler(http.server.BaseHTTPRequestHandler):
             wa    = render_whatsapp_section(base_path=base)
             tg    = render_telegram_section(base_path=base)
             rules = render_rules_section(base_path=base)
-            self.send_html(200, page("Cinexis Setup", lic + wa + tg + rules + voice, base_path=base))
+            daily = render_daily_section(base_path=base)
+            self.send_html(200, page("Cinexis Setup", lic + wa + tg + rules + daily + voice, base_path=base))
         elif path == "/ha/entities":
             # Fetch the HA entity list so the rule editor can autocomplete.
             try:
@@ -1130,6 +1206,35 @@ class IngressHandler(http.server.BaseHTTPRequestHandler):
                 prof["chosen_billing"]         = payload.get("billing_period")
                 save_customer_profile(prof)
             return self.send_json(200, resp)
+
+        # ── Daily summary config + test fire ──────────────────────────────
+        if path == "/daily/save":
+            try:    payload = json.loads(self.read_body() or b"{}")
+            except: return self.send_json(400, {"ok": False, "error": "bad_json"})
+            save_daily_config(payload)
+            return self.send_json(200, {"ok": True})
+
+        if path == "/daily/test":
+            # Force a fresh summary by deleting the last-sent marker, then
+            # poke the events service via SIGUSR1 — simpler: just run the
+            # summary inline using the same helpers (won't conflict because
+            # daily_loop checks last_sent_date which we'll update afterwards).
+            cfg = load_daily_config()
+            if not cfg.get("entities") or not (cfg.get("wa_recipients") or cfg.get("tg_chat_ids")):
+                return self.send_json(400, {"ok": False, "error": "configure_entities_and_recipients_first"})
+            # Build text inline (mirror of cinexis-events.py build_summary_text)
+            from datetime import datetime as _dt
+            text = f"📊 Cinexis daily summary — {_dt.now().strftime('%a %d %b %Y')} (TEST)\\n\\nThis is a test fire from the addon UI.\\n\\nIf you receive this, your daily summary is wired up. The real one will fire at {cfg.get('time','08:00')} every day.\\n\\n— Cinexis"
+            sent = 0; errs = []
+            for to in cfg.get("wa_recipients", []):
+                r = wa_service_call("POST", "/send/text", {"to": to, "text": text})
+                if r.get("ok"): sent += 1
+                else: errs.append(f"WA→{to}: {r.get('error')}")
+            for chat in cfg.get("tg_chat_ids", []):
+                r = telegram_api("sendMessage", {"chat_id": chat, "text": text})
+                if r.get("ok"): sent += 1
+                else: errs.append(f"TG→{chat}: {r.get('description') or r.get('error')}")
+            return self.send_json(200, {"ok": sent > 0, "sent": sent, "errors": errs})
 
         # ── Notification rules CRUD ───────────────────────────────────────
         if path == "/rules/save":
