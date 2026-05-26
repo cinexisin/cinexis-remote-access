@@ -523,6 +523,137 @@ $('#finish').onclick = () => location.href = BASE;
 </script>
 """
 
+def render_ha_integration_section(base_path="/"):
+    """
+    'Use from Home Assistant' card — exposes the addon as REST commands so
+    customers define triggers inside HA's automation editor (the same place
+    they configure everything else) instead of duplicating logic in the
+    addon's own rules screen.
+
+    GreenAPI-style: addon = pipe, HA automations = brain.
+    """
+    return f"""
+<div class="card" id="ha-int-card">
+  <div class="card-header"><span class="card-icon">🏠</span>Use from Home Assistant automations</div>
+  <p class="muted small">
+    Paste the snippet below into your <code>configuration.yaml</code> and reload <em>YAML configuration → All YAML configuration</em>.
+    You can then call <code>service: notify.cinexis_whatsapp</code> or
+    <code>service: notify.cinexis_telegram</code> from any HA automation, script, or button.
+  </p>
+
+  <h4 style="margin-top:14px;font-size:.95rem">1. configuration.yaml</h4>
+  <pre id="ha-snippet" style="background:var(--bg);padding:14px;border-radius:8px;font-size:.78rem;overflow-x:auto;line-height:1.55"># Cinexis Remote Access — WhatsApp sender.
+# The addon publishes port 18083 to the HA host, so this URL is reachable
+# from HA Core directly. The addon's WhatsApp session must already be
+# paired (see the WhatsApp card on this page).
+#
+# For Telegram: don't use the addon. HA has a built-in `telegram_bot`
+# integration that works directly with your BotFather token — set it up
+# once and call `notify.telegram` from any automation. (Snippet below.)
+
+rest_command:
+  cinexis_whatsapp:
+    url: "http://homeassistant.local.hass.io:18083/send/text"
+    method: POST
+    content_type: "application/json"
+    payload: '{{{{ {{ "to": to, "text": message }} | to_json }}}}'
+
+  cinexis_whatsapp_image:
+    url: "http://homeassistant.local.hass.io:18083/send/image"
+    method: POST
+    content_type: "application/json"
+    payload: '{{{{ {{ "to": to, "image_url": image_url, "caption": caption }} | to_json }}}}'
+
+# ── Telegram (HA native — no addon involvement) ─────────────────────────
+# Replace the values with your BotFather token + your chat_id.
+telegram_bot:
+  - platform: polling
+    api_key: !secret telegram_bot_token
+    allowed_chat_ids:
+      - !secret telegram_chat_id
+
+notify:
+  - name: telegram
+    platform: telegram
+    chat_id: !secret telegram_chat_id
+
+# ── Optional: wrap WhatsApp as a notify service too ─────────────────────
+# Lets any automation use `service: notify.cinexis_whatsapp` like a regular
+# notify integration.
+notify:
+  - name: cinexis_whatsapp
+    platform: rest
+    resource: "http://homeassistant.local.hass.io:18083/send/text"
+    method: POST_JSON
+    message_param_name: text
+    target_param_name: to
+</pre>
+  <button class="btn btn-primary" onclick="copyHa('ha-snippet')" style="margin-top:6px">📋 Copy configuration.yaml snippet</button>
+
+  <h4 style="margin-top:22px;font-size:.95rem">2. secrets.yaml (so the token never lives in plain configuration.yaml)</h4>
+  <pre id="ha-secrets" style="background:var(--bg);padding:14px;border-radius:8px;font-size:.78rem;overflow-x:auto;line-height:1.55"># /config/secrets.yaml
+telegram_bot_token: "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
+telegram_chat_id:   123456789      # your personal chat — get from @userinfobot
+</pre>
+  <button class="btn btn-primary" onclick="copyHa('ha-secrets')" style="margin-top:6px">📋 Copy secrets.yaml</button>
+
+  <h4 style="margin-top:22px;font-size:.95rem">3. Example automation — front door at night</h4>
+  <pre id="ha-auto" style="background:var(--bg);padding:14px;border-radius:8px;font-size:.78rem;overflow-x:auto;line-height:1.55">- alias: Front door opens at night
+  description: WhatsApp + Telegram the family when the door opens between 10pm and 6am
+  triggers:
+    - trigger: state
+      entity_id: binary_sensor.front_door
+      to: "on"
+  conditions:
+    - condition: time
+      after: "22:00:00"
+      before: "06:00:00"
+  actions:
+    # WhatsApp via Cinexis addon (your paired number)
+    - service: rest_command.cinexis_whatsapp
+      data:
+        to: "919999000001"
+        message: >-
+          🚨 Front door opened at {{{{ now().strftime('%H:%M:%S') }}}}.
+          Last person home: {{{{ states('person.someone') }}}}.
+    # Telegram via HA's native integration (your own bot)
+    - service: notify.telegram
+      data:
+        message: "🚨 Front door (night) — {{{{ now().strftime('%H:%M') }}}}"
+</pre>
+  <button class="btn btn-primary" onclick="copyHa('ha-auto')" style="margin-top:6px">📋 Copy example automation</button>
+
+  <h4 style="margin-top:22px;font-size:.95rem">3. Or via the GUI automation editor</h4>
+  <ol class="muted small" style="margin-top:8px">
+    <li>HA → <strong>Settings → Automations &amp; Scenes → + Create Automation</strong></li>
+    <li>Trigger: pick whatever (state change, time pattern, event…)</li>
+    <li>Action: <strong>Call service → rest_command.cinexis_whatsapp</strong></li>
+    <li>Data fields:
+      <pre style="background:var(--bg);padding:10px;border-radius:6px;font-size:.75rem;margin-top:6px">to: "919999000001"
+message: "Hello from HA 👋"</pre>
+    </li>
+  </ol>
+
+  <p class="muted small" style="margin-top:16px;border-top:1px solid #2a2f3c;padding-top:14px">
+    <strong>Why this is better than the addon's own rules editor:</strong> you keep all logic in HA's
+    automation editor (same place you set everything else), can mix &amp; match WA / Telegram /
+    email / mobile push in one automation, and benefit from HA's robust condition / trigger /
+    template engine. The addon is just the WhatsApp + Telegram pipe.
+  </p>
+</div>
+<script>
+function copyHa(id) {{
+  const text = document.getElementById(id).innerText;
+  navigator.clipboard.writeText(text).then(() => {{
+    const btn = event.target;
+    const orig = btn.textContent;
+    btn.textContent = '✅ Copied';
+    setTimeout(() => btn.textContent = orig, 1500);
+  }});
+}}
+</script>
+"""
+
 def render_daily_section(base_path="/"):
     """Daily summary report config — fires once per day at configured time.
 
@@ -1130,16 +1261,29 @@ class IngressHandler(http.server.BaseHTTPRequestHandler):
         if path in ("/", "/index.html"):
             # First-run experience: if customer hasn't completed the wizard,
             # show it instead of the legacy license/voice dashboard.
-            if not load_customer_profile():
+            # Show wizard only on a true fresh install: no customer profile
+            # AND no cached license. Legacy customers (license-only, no profile)
+            # skip the wizard and see the dashboard so the WhatsApp QR + new
+            # cards are immediately reachable.
+            has_profile = bool(load_customer_profile())
+            has_license = os.path.exists(LICENSE_KEY_FILE) and os.path.getsize(LICENSE_KEY_FILE) > 0
+            if not has_profile and not has_license:
                 self.send_html(200, page("Welcome to Cinexis", render_onboarding_wizard(base_path=base), base_path=base))
                 return
             lic   = render_license_section()
             voice = render_voice_section()
             wa    = render_whatsapp_section(base_path=base)
             tg    = render_telegram_section(base_path=base)
-            rules = render_rules_section(base_path=base)
+            ha    = render_ha_integration_section(base_path=base)
             daily = render_daily_section(base_path=base)
-            self.send_html(200, page("Cinexis Setup", lic + wa + tg + rules + daily + voice, base_path=base))
+            rules = render_rules_section(base_path=base)
+            # Order: License, WhatsApp QR (prominent), Telegram, HA integration
+            # (the recommended path), then Daily Summary, then standalone Rules
+            # (de-emphasised — HA automations are the right answer for triggers),
+            # then Voice (Alexa) at the bottom.
+            self.send_html(200, page("Cinexis Setup",
+                lic + wa + tg + ha + daily + rules + voice,
+                base_path=base))
         elif path == "/ha/entities":
             # Fetch the HA entity list so the rule editor can autocomplete.
             try:

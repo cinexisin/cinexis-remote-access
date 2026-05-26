@@ -1,3 +1,57 @@
+## [1.12.0] - 2026-05-25
+
+### Added — HA-native automation integration
+
+Pivots the notification flow to match GreenAPI: the addon is the WhatsApp
+pipe, all the trigger logic lives in HA's automation editor. New dashboard
+card '🏠 Use from Home Assistant automations' shows:
+
+- A copy-paste configuration.yaml snippet that registers `rest_command.cinexis_whatsapp`
+  (text + image variants) plus an optional `notify.cinexis_whatsapp` wrapper.
+- A copy-paste secrets.yaml block for the Telegram bot token + chat_id.
+- A working example automation: 'Front door opens at night → WhatsApp +
+  Telegram the family group'.
+- Three-step GUI alternative (Settings → Automations → Create →
+  Action: Call service: rest_command.cinexis_whatsapp).
+
+Telegram is now expected to use HA's built-in `telegram_bot` integration
+(no addon involvement) — the addon-side Telegram card is kept for the
+quick test flow, but the production path is HA-native `notify.telegram`.
+
+### Added — addon port 18083 published to host
+
+The Baileys WhatsApp service is now reachable from HA Core at
+`http://homeassistant.local.hass.io:18083` for the REST commands above.
+Port mapping is documented in addon config so the user can remap it if
+18083 collides with anything else.
+
+### Fixed — legacy customers stuck on onboarding wizard
+
+Customers with an existing CNX-XXXXX license (no `customer_profile.json`
+yet) were being shown the new onboarding wizard instead of the dashboard,
+which meant the WhatsApp QR card was hidden. Now the wizard fires only
+when BOTH `customer_profile.json` is missing AND no license is cached —
+existing paying customers go straight to the full dashboard.
+
+### Fixed — overly-broad bot UA blocklist
+(Companion to the server-side fix.) The addon was banned by the
+cinexis-cloud server's fail2ban jail because the bot-defense map
+was matching `curl/`, `okhttp`, `Java/`, `python-requests`. Server-side
+fixed independently — your IP and `223.185.0.0/16` + `27.61.0.0/16` are
+now permanently whitelisted in the jail, and those legitimate client
+libraries were removed from the bad-UA map. No addon change needed for
+this one — documented here so the fix is traceable.
+
+### Card order on the dashboard
+1. 📱 WhatsApp (QR + status + test send)  ← most-used, top
+2. 💬 Telegram (legacy in-addon — use HA's notify.telegram for production)
+3. 🏠 Use from Home Assistant automations  ← NEW
+4. 📊 Daily Summary Report
+5. ⚡ Notification Rules (now de-emphasised — HA automations are the answer)
+6. 🎤 Voice Devices (Alexa)
+
+---
+
 # Changelog — Cinexis Remote Access
 
 All notable changes to this add-on are documented here.
