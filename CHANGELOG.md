@@ -1,3 +1,54 @@
+## [1.14.0] - 2026-05-26
+
+### Added — Subscription & Upgrade card (in-addon, no public URLs)
+
+The Upgrade flow now lives entirely inside the addon UI. No more
+`https://cinexis.cloud/upgrade?node_id=...` deep links — the node_id
+stays inside the addon's authenticated ingress.
+
+- **Always-visible "💎 Subscription & Billing" card** at the top of the
+  dashboard. Shows current plan, billing period, status pill, expiry
+  date, autopay state, and a legacy badge for grandfathered customers.
+- **Upgrade / change plan** button opens an in-modal plan grid. Plans
+  are loaded over the authenticated `/api/addon/plans` endpoint.
+- Pick a plan → addon POSTs to `/api/addon/subscribe` over ingress;
+  cloud creates a Razorpay subscription server-side and returns the
+  Razorpay-hosted `short_url`. Addon opens THAT in a new tab — never
+  a cinexis.cloud URL. UI then polls every 5s for the plan to flip
+  active.
+- **Cancel auto-pay** button when a subscription is active. Issues
+  `cancel_at_cycle_end=1` so the customer keeps access through the
+  paid period.
+- **/diag endpoint** — `GET <ingress>/diag` returns the cloud's view
+  of this node (plan, entitlements, status). Use it when a feature
+  card doesn't appear to find out what the cloud thinks.
+
+### Fixed
+
+- Faster pending-approval refresh: dashboard now reloads every 15s
+  while pending (down from 60s) so admin approval lands within ~15s.
+- Status cache TTL drops to 10s while in pending_approval so a license
+  assignment shows up quickly.
+- Locked-card "Upgrade plan →" buttons now open the in-modal upgrade
+  flow instead of a public cinexis.cloud page.
+- /api/addon/status now auto-heals customers whose `ha_node_id` was
+  stored as just the 8-char prefix (Alexa legacy path) — the cloud
+  upgrades the row to the full UUID on first authenticated /status
+  call, so the customer's dashboard stops flapping into
+  pending_approval.
+
+### Companion cloud changes (already deployed)
+
+- New `POST /api/addon/subscribe/cancel` for autopay teardown.
+- New `GET /api/addon/plans` (authenticated) for the in-modal grid.
+- `POST /api/addon/subscribe` no longer flips the customer's plan
+  on subscription creation — only Razorpay webhook (subscription.charged)
+  promotes the plan. Stops "ghost upgrades" if the customer abandons
+  the Razorpay checkout.
+- Webhook reads the intended plan from Razorpay subscription notes
+  and promotes both `plan` and `billing_period` on first successful
+  charge.
+
 ## [1.13.0] - 2026-05-26
 
 ### Added — Pending-approval gate + license-tier feature gating

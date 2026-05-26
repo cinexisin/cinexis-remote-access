@@ -155,21 +155,26 @@ def cinexis_addon_call(method, path, payload=None):
 # returns plan + entitlements + license_status, so the dashboard doesn't
 # need to do any tier→feature mapping locally.
 _STATUS_CACHE = {"data": None, "ts": 0}
-def get_addon_status():
-    """Returns the latest /api/addon/status payload, refreshing every 30s."""
+def get_addon_status(force_fresh=False):
+    """Returns the latest /api/addon/status payload.
+    Cached 10s while in pending_approval (so admin-side license assignment
+    reflects within ~10s) and 30s otherwise. force_fresh bypasses the cache
+    — used right after a subscribe call so the UI reflects the new state."""
     nowts = time.time()
-    if _STATUS_CACHE["data"] and (nowts - _STATUS_CACHE["ts"]) < 30:
-        return _STATUS_CACHE["data"]
+    if not force_fresh and _STATUS_CACHE["data"]:
+        prev = _STATUS_CACHE["data"]
+        ttl = 10 if prev.get("license_status") == "pending_approval" else 30
+        if (nowts - _STATUS_CACHE["ts"]) < ttl:
+            return prev
     data = cinexis_addon_call("GET", "/status") or {}
     if data.get("ok"):
         _STATUS_CACHE["data"] = data
         _STATUS_CACHE["ts"]   = nowts
     return data or {}
 
-def render_locked_card(title, feature_label, upgrade_url):
+def render_locked_card(title, feature_label):
     """Replacement card shown when the current plan doesn't include a feature.
-    Greys it out and offers an upgrade CTA."""
-    safe_url = (upgrade_url or "https://cinexis.cloud/upgrade").replace('"', '%22')
+    Greys it out and opens the in-addon upgrade modal (no public URL leaked)."""
     return f"""
 <div class="card" style="opacity:.55;position:relative;border:1px dashed rgba(148,163,184,.25)">
   <div style="position:absolute;top:14px;right:14px;font-size:1.4rem">🔒</div>
@@ -177,13 +182,200 @@ def render_locked_card(title, feature_label, upgrade_url):
   <p style="color:#94a3b8;font-size:.85rem;margin:0 0 12px">
     <strong>{feature_label}</strong> isn't included in your current plan.
   </p>
-  <a href="{safe_url}" target="_blank" rel="noopener noreferrer"
-     style="display:inline-block;padding:8px 16px;border-radius:8px;
+  <button onclick="openUpgradeModal()"
+     style="border:none;cursor:pointer;display:inline-block;padding:8px 16px;border-radius:8px;
             background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff;
-            text-decoration:none;font-weight:600;font-size:.85rem">
+            font-weight:600;font-size:.85rem">
     Upgrade plan →
-  </a>
+  </button>
 </div>
+"""
+
+def render_subscription_card(status, base_path="/"):
+    """Always-visible card showing current plan + Upgrade/Change/Cancel actions.
+    All actions are in-addon — no public URL exposure."""
+    plan       = status.get("plan") or "—"
+    billing    = status.get("billing_period") or "monthly"
+    expires_at = status.get("expires_at")
+    trial_end  = status.get("trial_ends_at")
+    auto_renew = status.get("auto_renew", False)
+    legacy     = status.get("legacy", False)
+    lic_status = status.get("license_status") or "—"
+
+    plan_pretty = {
+        "ha-remote": "Lite (HA Remote)",
+        "ha-voice":  "Pro (HA + Voice)",
+        "smart":     "Smart",
+        "enterprise":"Enterprise",
+    }.get(plan, plan or "—")
+
+    exp_label = ""
+    if trial_end:
+        exp_label = f"Trial ends: " + datetime.fromtimestamp(trial_end, tz=timezone.utc).astimezone().strftime("%d %b %Y")
+    elif expires_at:
+        exp_label = f"Renews: " + datetime.fromtimestamp(expires_at, tz=timezone.utc).astimezone().strftime("%d %b %Y")
+
+    status_pill_color = {
+        "active":   "#22c55e",
+        "trial":    "#3b82f6",
+        "pending_payment": "#f59e0b",
+        "expired":  "#ef4444",
+    }.get(lic_status, "#94a3b8")
+
+    legacy_badge = '<span style="background:#fbbf24;color:#0b0e14;font-size:.7rem;padding:2px 8px;border-radius:6px;font-weight:700;margin-left:8px">⚡ legacy</span>' if legacy else ''
+    autopay_badge = ('<span style="color:#22c55e;font-size:.75rem;margin-left:8px">↻ Auto-pay on</span>' if auto_renew else
+                     '<span style="color:#64748b;font-size:.75rem;margin-left:8px">Auto-pay off</span>')
+
+    return f"""
+<div class="card" id="sub-card">
+  <div class="card-header"><span class="card-icon">💎</span>Subscription &amp; Billing</div>
+  <div style="display:flex;flex-wrap:wrap;gap:24px;align-items:center;margin:14px 0 18px">
+    <div>
+      <div style="font-size:.75rem;color:#94a3b8;text-transform:uppercase;letter-spacing:.05em">Current plan</div>
+      <div style="font-size:1.15rem;font-weight:700;margin-top:2px">{plan_pretty}{legacy_badge}</div>
+      <div style="font-size:.75rem;color:#94a3b8;margin-top:2px">Billing: {billing}{autopay_badge}</div>
+    </div>
+    <div>
+      <div style="font-size:.75rem;color:#94a3b8;text-transform:uppercase;letter-spacing:.05em">Status</div>
+      <div style="margin-top:2px"><span style="display:inline-block;padding:3px 12px;border-radius:6px;background:{status_pill_color}22;color:{status_pill_color};font-weight:700;font-size:.85rem;text-transform:capitalize">{lic_status.replace('_',' ')}</span></div>
+      <div style="font-size:.78rem;color:#94a3b8;margin-top:4px">{exp_label}</div>
+    </div>
+  </div>
+  <div style="display:flex;gap:10px;flex-wrap:wrap">
+    <button onclick="openUpgradeModal()" style="padding:9px 18px;border-radius:8px;border:none;cursor:pointer;background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff;font-weight:600;font-size:.88rem">
+      💎 Upgrade / change plan
+    </button>
+    {('<button onclick="cancelAutopay()" style="padding:9px 14px;border-radius:8px;border:1px solid #2a2f3c;background:transparent;color:#94a3b8;cursor:pointer;font-size:.85rem">Cancel auto-pay</button>' if auto_renew else '')}
+  </div>
+  <p style="color:#64748b;font-size:.72rem;margin-top:14px;margin-bottom:0">
+    Payments are processed directly by Razorpay (PCI DSS Level 1). Cinexis never stores your card or UPI details.
+  </p>
+</div>
+
+<!-- In-addon Upgrade Modal — plan grid, NO public links -->
+<div id="upgrade-modal" style="display:none;position:fixed;inset:0;background:rgba(8,12,20,.75);z-index:1000;align-items:flex-start;justify-content:center;padding:30px 20px;overflow-y:auto">
+  <div style="background:#0d1220;border:1px solid #1e2d45;border-radius:14px;max-width:760px;width:100%;padding:24px;color:#e8edf5">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+      <h2 style="margin:0;font-size:1.25rem">Pick a plan</h2>
+      <button onclick="closeUpgradeModal()" style="background:transparent;border:none;color:#94a3b8;font-size:1.4rem;cursor:pointer">×</button>
+    </div>
+    <p style="color:#94a3b8;font-size:.85rem;margin:0 0 18px">Switch tiers anytime. Razorpay handles payment — Cinexis never sees your card or UPI details.</p>
+    <div id="up-billing-row" style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap">
+      <button data-period="monthly"    onclick="setBillingPeriod(this)" class="up-period up-active">Monthly</button>
+      <button data-period="quarterly"  onclick="setBillingPeriod(this)" class="up-period">Quarterly</button>
+      <button data-period="halfyearly" onclick="setBillingPeriod(this)" class="up-period">Half-yearly</button>
+      <button data-period="yearly"     onclick="setBillingPeriod(this)" class="up-period">Yearly</button>
+    </div>
+    <div id="up-plans-grid">
+      <div style="text-align:center;padding:30px;color:#64748b">⏳ Loading plans…</div>
+    </div>
+    <div id="up-result" style="margin-top:14px;font-size:.85rem"></div>
+  </div>
+</div>
+
+<style>
+  .up-period {{ padding:7px 14px;border-radius:8px;border:1px solid #1e2d45;background:transparent;color:#94a3b8;font-size:.82rem;cursor:pointer }}
+  .up-period.up-active {{ background:#6366f1;border-color:#6366f1;color:#fff;font-weight:600 }}
+  .up-plan-card {{ background:#111827;border:1px solid #1e2d45;border-radius:10px;padding:16px;cursor:pointer;transition:all .15s }}
+  .up-plan-card:hover {{ border-color:#6366f1;transform:translateY(-1px) }}
+  .up-plan-card.up-current {{ border:2px dashed #22c55e;cursor:default }}
+  .up-plan-card.up-highlight {{ border-color:#8b5cf6 }}
+</style>
+
+<script>
+const SUB_BASE = '{base_path}';
+let __upBilling = 'monthly';
+let __upPlansCache = null;
+
+function openUpgradeModal() {{
+  document.getElementById('upgrade-modal').style.display = 'flex';
+  loadUpgradePlans();
+}}
+function closeUpgradeModal() {{
+  document.getElementById('upgrade-modal').style.display = 'none';
+  document.getElementById('up-result').textContent = '';
+}}
+function setBillingPeriod(btn) {{
+  document.querySelectorAll('.up-period').forEach(b => b.classList.remove('up-active'));
+  btn.classList.add('up-active');
+  __upBilling = btn.dataset.period;
+  if (__upPlansCache) renderUpgradePlans(__upPlansCache);
+}}
+async function loadUpgradePlans() {{
+  if (__upPlansCache) {{ renderUpgradePlans(__upPlansCache); return; }}
+  try {{
+    const r = await fetch(SUB_BASE + 'plans').then(r => r.json());
+    if (!r.ok || !r.plans) {{
+      document.getElementById('up-plans-grid').innerHTML = '<div style="color:#ef4444;padding:20px">Could not load plans. Please retry.</div>';
+      return;
+    }}
+    __upPlansCache = r.plans;
+    renderUpgradePlans(__upPlansCache);
+  }} catch(e) {{
+    document.getElementById('up-plans-grid').innerHTML = '<div style="color:#ef4444;padding:20px">Network error loading plans.</div>';
+  }}
+}}
+function renderUpgradePlans(plans) {{
+  const currentPlan = {json.dumps(plan)};
+  const grid = document.getElementById('up-plans-grid');
+  const cards = plans.map(p => {{
+    const price = p.prices && p.prices[__upBilling];
+    const isCurrent = (p.slug === currentPlan);
+    const cls = 'up-plan-card' + (isCurrent ? ' up-current' : '') + (p.highlight ? ' up-highlight' : '');
+    const priceHtml = price
+      ? '<div style="margin:6px 0 4px"><span style="font-size:1.3rem;font-weight:700">₹' + price.amount_inr.toLocaleString('en-IN') + '</span><span style="font-size:.8rem;color:#94a3b8"> / ' + __upBilling + '</span></div>'
+      : '<div style="color:#94a3b8;font-size:.85rem;margin:6px 0">Price unavailable for this billing period</div>';
+    const btn = isCurrent
+      ? '<div style="margin-top:10px;color:#22c55e;font-size:.82rem;font-weight:600">✓ Your current plan</div>'
+      : (price && price.razorpay_plan_id
+          ? '<button onclick="subscribeTo(\\''+p.slug+'\\')" style="margin-top:10px;width:100%;padding:9px;border:none;border-radius:7px;background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff;font-weight:600;cursor:pointer">Pick this plan</button>'
+          : '<div style="margin-top:10px;color:#64748b;font-size:.78rem">Not available for ' + __upBilling + ' billing</div>');
+    const feats = (p.features || []).slice(0, 5).map(f => '<li style="font-size:.78rem;color:#94a3b8;margin:2px 0">• ' + f + '</li>').join('');
+    return '<div class="'+cls+'"><div style="font-size:1.05rem;font-weight:700">'+p.name+'</div>'+priceHtml+'<ul style="margin:8px 0 0;padding:0;list-style:none">'+feats+'</ul>'+btn+'</div>';
+  }});
+  grid.style.display = 'grid';
+  grid.style.gridTemplateColumns = 'repeat(auto-fit,minmax(220px,1fr))';
+  grid.style.gap = '12px';
+  grid.innerHTML = cards.join('');
+}}
+async function subscribeTo(planSlug) {{
+  const out = document.getElementById('up-result');
+  out.style.color = '#94a3b8';
+  out.textContent = '⏳ Creating subscription with Razorpay…';
+  try {{
+    const r = await fetch(SUB_BASE + 'subscribe', {{
+      method: 'POST',
+      headers: {{'Content-Type':'application/json'}},
+      body: JSON.stringify({{ plan_slug: planSlug, billing_period: __upBilling }}),
+    }}).then(r => r.json());
+    if (r.ok && r.short_url) {{
+      out.style.color = '#22c55e';
+      out.innerHTML = '✅ Subscription ready. <a href="'+r.short_url+'" target="_blank" rel="noopener" style="color:#818cf8;text-decoration:underline">Open Razorpay to complete payment →</a><br><span style="color:#94a3b8;font-size:.78rem">Your plan activates the moment payment succeeds. This page refreshes automatically.</span>';
+      // open Razorpay-hosted checkout — never our domain
+      window.open(r.short_url, '_blank', 'noopener,noreferrer');
+      // Poll for status flip every 5s
+      setTimeout(function pollStatus() {{
+        fetch(SUB_BASE + 'wizard/status').then(r => r.json()).then(s => {{
+          if (s.plan === planSlug && s.license_status === 'active') {{ location.reload(); }}
+          else setTimeout(pollStatus, 5000);
+        }}).catch(() => setTimeout(pollStatus, 5000));
+      }}, 5000);
+    }} else {{
+      out.style.color = '#ef4444';
+      out.textContent = '❌ ' + (r.error || 'Could not create subscription');
+    }}
+  }} catch(e) {{
+    out.style.color = '#ef4444';
+    out.textContent = '❌ Network error: ' + e.message;
+  }}
+}}
+async function cancelAutopay() {{
+  if (!confirm('Cancel auto-renewal? You keep access until your current billing cycle ends — no immediate charge.')) return;
+  const r = await fetch(SUB_BASE + 'subscribe/cancel', {{method:'POST'}}).then(r => r.json()).catch(() => ({{ok:false,error:'network'}}));
+  alert(r.ok ? 'Auto-renewal cancelled. You keep access until ' + (r.expires_at_label || 'cycle end') + '.' : 'Could not cancel: ' + (r.error || 'unknown'));
+  if (r.ok) setTimeout(() => location.reload(), 800);
+}}
+</script>
 """
 
 def render_pending_banner():
@@ -198,10 +390,10 @@ def render_pending_banner():
     message the moment it's ready.
   </p>
   <p style="color:#64748b;font-size:.8rem">
-    Nothing for you to do here — this page will refresh automatically.
+    Nothing for you to do here — this page refreshes every 15 seconds.
   </p>
 </div>
-<script>setTimeout(function(){ location.reload(); }, 60000);</script>
+<script>setTimeout(function(){ location.reload(); }, 15000);</script>
 """
 
 def load_daily_config():
@@ -1331,7 +1523,6 @@ class IngressHandler(http.server.BaseHTTPRequestHandler):
             status = get_addon_status()
             lic_status   = status.get("license_status")
             entitlements = status.get("entitlements") or {}
-            upgrade_url  = status.get("upgrade_url") or "https://cinexis.cloud/upgrade"
 
             # Pending-approval gate — show the waiting banner and nothing else.
             if lic_status == "pending_approval":
@@ -1339,30 +1530,33 @@ class IngressHandler(http.server.BaseHTTPRequestHandler):
                     render_pending_banner(), base_path=base))
                 return
 
-            # License + always-on cards
+            # Always-visible Subscription / Billing card (current plan,
+            # Upgrade button, Cancel autopay). All actions are in-addon —
+            # no public cinexis.cloud URLs exposed.
+            sub   = render_subscription_card(status, base_path=base)
             lic   = render_license_section()
 
             # Feature cards gated by entitlements. Each card either renders
-            # in full or is replaced by a locked-card upgrade CTA.
+            # in full or is replaced by a locked-card that opens the in-addon
+            # upgrade modal (no public URL).
             wa    = render_whatsapp_section(base_path=base) if entitlements.get("whatsapp", True) \
-                    else render_locked_card("📱 WhatsApp", "WhatsApp send + receive", upgrade_url)
+                    else render_locked_card("📱 WhatsApp", "WhatsApp send + receive")
             tg    = render_telegram_section(base_path=base) if entitlements.get("telegram", True) \
-                    else render_locked_card("💬 Telegram", "Telegram bot pairing", upgrade_url)
+                    else render_locked_card("💬 Telegram", "Telegram bot pairing")
             ha    = render_ha_integration_section(base_path=base) if entitlements.get("ha_integration", True) \
-                    else render_locked_card("🏠 Home Assistant automations", "REST commands & notify services", upgrade_url)
+                    else render_locked_card("🏠 Home Assistant automations", "REST commands & notify services")
             daily = render_daily_section(base_path=base)   # always available
             rules = render_rules_section(base_path=base)   # de-emphasised, always shown
             # Voice card: lite plan loses Alexa+Google+Siri entirely.
             voice_any = (entitlements.get("voice_alexa") or entitlements.get("voice_google") or entitlements.get("voice_siri"))
             voice = render_voice_section() if voice_any \
-                    else render_locked_card("🎙️ Voice control (Alexa / Google / Siri)", "Voice control on Pro plan and up", upgrade_url)
+                    else render_locked_card("🎙️ Voice control (Alexa / Google / Siri)", "Voice control on Pro plan and up")
 
-            # Order: License, WhatsApp QR (prominent), Telegram, HA integration
-            # (the recommended path), then Daily Summary, then standalone Rules
-            # (de-emphasised — HA automations are the right answer for triggers),
-            # then Voice at the bottom.
+            # Order: Subscription (top — always visible), License, WhatsApp QR
+            # (prominent), Telegram, HA integration, Daily Summary, Rules,
+            # Voice at the bottom.
             self.send_html(200, page("Cinexis Setup",
-                lic + wa + tg + ha + daily + rules + voice,
+                sub + lic + wa + tg + ha + daily + rules + voice,
                 base_path=base))
         elif path == "/ha/entities":
             # Fetch the HA entity list so the rule editor can autocomplete.
@@ -1385,6 +1579,21 @@ class IngressHandler(http.server.BaseHTTPRequestHandler):
             # Addon-side proxy of /api/addon/status so the JS can poll over
             # ingress (cross-origin to cinexis.cloud would need CORS).
             self.send_json(200, cinexis_addon_call("GET", "/status"))
+        elif path == "/plans":
+            # Proxy /api/addon/plans — authenticated by node creds server-side.
+            # Keeps the customer's request inside the addon's iframe.
+            self.send_json(200, cinexis_addon_call("GET", "/plans"))
+        elif path == "/diag":
+            # Diagnostics — what does the cloud think of THIS addon's node?
+            # Useful when a customer reports "WhatsApp QR not showing" etc.
+            node_id, _ = get_node_credentials()
+            status = cinexis_addon_call("GET", "/status")
+            self.send_json(200, {
+                "ok": True,
+                "addon_version": "1.14.0",
+                "node_id": node_id,
+                "cloud_status": status,
+            })
         elif path == "/health":
             self.send_json(200, {"ok": True})
         else:
@@ -1626,6 +1835,38 @@ class IngressHandler(http.server.BaseHTTPRequestHandler):
                 data[entity_id][platform] = not enabled
                 save_exclusions(data)
                 self.send_json(200, {"ok": True})
+            except Exception as e:
+                self.send_json(500, {"ok": False, "error": str(e)})
+
+        elif path == "/subscribe":
+            # Server-side proxy of /api/addon/subscribe — addon's JS hits us
+            # over ingress (no CORS), we forward with node creds. Returns the
+            # Razorpay-hosted short_url; addon UI opens THAT in a new tab so
+            # the customer never lands on a cinexis.cloud public page.
+            try:
+                body = json.loads(self.read_body() or "{}")
+                plan_slug      = body.get("plan_slug")
+                billing_period = body.get("billing_period", "monthly")
+                if not plan_slug:
+                    self.send_json(400, {"ok": False, "error": "plan_slug_required"})
+                    return
+                # Invalidate status cache so the post-subscribe poll sees fresh data.
+                _STATUS_CACHE["data"] = None
+                result = cinexis_addon_call("POST", "/subscribe", {
+                    "plan_slug":      plan_slug,
+                    "billing_period": billing_period,
+                })
+                self.send_json(200, result)
+            except Exception as e:
+                self.send_json(500, {"ok": False, "error": str(e)})
+
+        elif path == "/subscribe/cancel":
+            # Cancel auto-renewal on the customer's Razorpay subscription.
+            # No payload required — cloud resolves the sub by node_id.
+            try:
+                _STATUS_CACHE["data"] = None
+                result = cinexis_addon_call("POST", "/subscribe/cancel", {})
+                self.send_json(200, result)
             except Exception as e:
                 self.send_json(500, {"ok": False, "error": str(e)})
 
