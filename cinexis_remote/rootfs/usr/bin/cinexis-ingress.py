@@ -9,6 +9,7 @@ Served on INGRESS_PORT (HA ingress). Provides:
 
 import json
 import os
+import time
 import http.server
 import urllib.request
 import urllib.parse
@@ -148,6 +149,60 @@ def cinexis_addon_call(method, path, payload=None):
         except: return {"ok": False, "error": f"http_{e.code}"}
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
+# Cached license-status fetcher. Hits /api/addon/status at most once per 30s
+# so dashboard renders are snappy even on flaky links. The cloud already
+# returns plan + entitlements + license_status, so the dashboard doesn't
+# need to do any tier→feature mapping locally.
+_STATUS_CACHE = {"data": None, "ts": 0}
+def get_addon_status():
+    """Returns the latest /api/addon/status payload, refreshing every 30s."""
+    nowts = time.time()
+    if _STATUS_CACHE["data"] and (nowts - _STATUS_CACHE["ts"]) < 30:
+        return _STATUS_CACHE["data"]
+    data = cinexis_addon_call("GET", "/status") or {}
+    if data.get("ok"):
+        _STATUS_CACHE["data"] = data
+        _STATUS_CACHE["ts"]   = nowts
+    return data or {}
+
+def render_locked_card(title, feature_label, upgrade_url):
+    """Replacement card shown when the current plan doesn't include a feature.
+    Greys it out and offers an upgrade CTA."""
+    safe_url = (upgrade_url or "https://cinexis.cloud/upgrade").replace('"', '%22')
+    return f"""
+<div class="card" style="opacity:.55;position:relative;border:1px dashed rgba(148,163,184,.25)">
+  <div style="position:absolute;top:14px;right:14px;font-size:1.4rem">🔒</div>
+  <h2 style="margin:0 0 6px">{title}</h2>
+  <p style="color:#94a3b8;font-size:.85rem;margin:0 0 12px">
+    <strong>{feature_label}</strong> isn't included in your current plan.
+  </p>
+  <a href="{safe_url}" target="_blank" rel="noopener noreferrer"
+     style="display:inline-block;padding:8px 16px;border-radius:8px;
+            background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff;
+            text-decoration:none;font-weight:600;font-size:.85rem">
+    Upgrade plan →
+  </a>
+</div>
+"""
+
+def render_pending_banner():
+    """Shown when license_status='pending_approval' — replaces the whole dashboard."""
+    return """
+<div class="card" style="text-align:center;padding:48px 24px">
+  <div style="font-size:3rem;margin-bottom:12px">⏳</div>
+  <h2 style="margin:0 0 8px">Waiting for admin approval</h2>
+  <p style="color:#94a3b8;max-width:480px;margin:0 auto 16px;line-height:1.5">
+    Your registration was received. Our team is reviewing your account
+    and will activate your trial within 24 hours. You'll get a WhatsApp
+    message the moment it's ready.
+  </p>
+  <p style="color:#64748b;font-size:.8rem">
+    Nothing for you to do here — this page will refresh automatically.
+  </p>
+</div>
+<script>setTimeout(function(){ location.reload(); }, 60000);</script>
+"""
 
 def load_daily_config():
     try:
@@ -1270,17 +1325,42 @@ class IngressHandler(http.server.BaseHTTPRequestHandler):
             if not has_profile and not has_license:
                 self.send_html(200, page("Welcome to Cinexis", render_onboarding_wizard(base_path=base), base_path=base))
                 return
+
+            # Pull license + entitlements from the cloud. The cloud is the
+            # source of truth for what's unlocked; we never decide locally.
+            status = get_addon_status()
+            lic_status   = status.get("license_status")
+            entitlements = status.get("entitlements") or {}
+            upgrade_url  = status.get("upgrade_url") or "https://cinexis.cloud/upgrade"
+
+            # Pending-approval gate — show the waiting banner and nothing else.
+            if lic_status == "pending_approval":
+                self.send_html(200, page("Cinexis — Pending approval",
+                    render_pending_banner(), base_path=base))
+                return
+
+            # License + always-on cards
             lic   = render_license_section()
-            voice = render_voice_section()
-            wa    = render_whatsapp_section(base_path=base)
-            tg    = render_telegram_section(base_path=base)
-            ha    = render_ha_integration_section(base_path=base)
-            daily = render_daily_section(base_path=base)
-            rules = render_rules_section(base_path=base)
+
+            # Feature cards gated by entitlements. Each card either renders
+            # in full or is replaced by a locked-card upgrade CTA.
+            wa    = render_whatsapp_section(base_path=base) if entitlements.get("whatsapp", True) \
+                    else render_locked_card("📱 WhatsApp", "WhatsApp send + receive", upgrade_url)
+            tg    = render_telegram_section(base_path=base) if entitlements.get("telegram", True) \
+                    else render_locked_card("💬 Telegram", "Telegram bot pairing", upgrade_url)
+            ha    = render_ha_integration_section(base_path=base) if entitlements.get("ha_integration", True) \
+                    else render_locked_card("🏠 Home Assistant automations", "REST commands & notify services", upgrade_url)
+            daily = render_daily_section(base_path=base)   # always available
+            rules = render_rules_section(base_path=base)   # de-emphasised, always shown
+            # Voice card: lite plan loses Alexa+Google+Siri entirely.
+            voice_any = (entitlements.get("voice_alexa") or entitlements.get("voice_google") or entitlements.get("voice_siri"))
+            voice = render_voice_section() if voice_any \
+                    else render_locked_card("🎙️ Voice control (Alexa / Google / Siri)", "Voice control on Pro plan and up", upgrade_url)
+
             # Order: License, WhatsApp QR (prominent), Telegram, HA integration
             # (the recommended path), then Daily Summary, then standalone Rules
             # (de-emphasised — HA automations are the right answer for triggers),
-            # then Voice (Alexa) at the bottom.
+            # then Voice at the bottom.
             self.send_html(200, page("Cinexis Setup",
                 lic + wa + tg + ha + daily + rules + voice,
                 base_path=base))

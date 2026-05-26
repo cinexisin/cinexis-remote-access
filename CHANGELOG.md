@@ -1,3 +1,51 @@
+## [1.13.0] - 2026-05-26
+
+### Added — Pending-approval gate + license-tier feature gating
+
+The cloud is now the source of truth for which feature cards a customer
+can see. The addon UI calls `/api/addon/status` (cached 30s) which returns:
+
+- `license_status`: `pending_approval`, `trial`, `active`, `pending_payment`,
+  `expired`, etc.
+- `entitlements`: a per-feature boolean map keyed by plan slug —
+  `whatsapp`, `telegram`, `ha_integration`, `voice_alexa`, `voice_google`,
+  `voice_siri`, `scenes`.
+- `upgrade_url`: a deep link to https://cinexis.cloud/upgrade?node_id=… for
+  customers who want to unlock more features.
+
+What changes in the addon UI:
+
+- **Pending-approval banner** — Fresh installs land in `pending_approval`
+  until an admin assigns a license tier. The dashboard now shows a single
+  '⏳ Waiting for admin approval' card and auto-refreshes every minute.
+  No feature cards render until approval lands. Existing customers
+  (created before 2026-05-26) were grandfathered server-side, so this
+  only affects new installs.
+
+- **Feature-locked cards** — Cards the current plan doesn't include
+  (e.g. Voice on the Lite tier) are replaced by a greyed-out card with
+  a 🔒 icon and an 'Upgrade plan →' button that opens the cloud upgrade
+  page in a new tab.
+
+- **Entitlements come from the cloud** — No more tier→feature logic
+  baked into the addon. Plans can change features without an addon update.
+
+### Companion changes on cinexis-cloud (already deployed)
+
+- New status: `pending_approval`. New columns: `trial_starts_at`,
+  `trial_ends_at`, `auto_approved_legacy`, `deleted_at`.
+- New endpoints: `POST /admin/api/customers/:id/approve` (license_admin
+  or owner role), `POST /admin/api/customers/:id/reject`,
+  `POST /admin/api/customers/:id/restore`.
+- Multi-admin RBAC: roles `owner` / `license_admin` / `viewer`.
+- WhatsApp admin notifications (`new_registration`, `admin_approved`,
+  `payment_success`, `payment_failed`, `trial_expiring_3d`,
+  `subscription_halted`) with configurable recipients at
+  `/admin/notifications`.
+- Soft-delete for customers (preserves payment history).
+- One-time grandfather migration so existing customers don't get bumped
+  into pending_approval.
+
 ## [1.12.0] - 2026-05-25
 
 ### Added — HA-native automation integration
