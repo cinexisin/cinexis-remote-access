@@ -1,3 +1,68 @@
+## [1.15.0] - 2026-05-26
+
+### Added — Recipients book + unified /notify service
+
+Replaces the v1.12.0 "paste phone numbers into configuration.yaml" pattern
+with a proper recipients book. HA automations reference contacts by name
+(Dad / Mom / Family / On-call) and the addon owns the address-resolution.
+
+- New **📇 Notification Recipients** card in the addon dashboard.
+  Add WhatsApp numbers + Telegram chat IDs by friendly name; each row
+  has Test / Enable / Remove buttons.
+- Stored in `/share/cinexis/recipients.json` (shared between Python
+  ingress and the Node WA service so both can read it).
+
+- New **`POST /notify`** endpoint on the Baileys WA service
+  (port 18083 — already exposed to the HA host). Body shape:
+  ```json
+  {
+    "to": "Dad" | ["Dad","Mom"] | "all" | "all_whatsapp" | "all_telegram",
+    "message": "...",
+    "image_url": "...",
+    "image_entity": "camera.front_door",
+    "video_url": "...", "document_url": "...", "document_name": "...",
+    "automation_id": "automation.front_door_at_night"
+  }
+  ```
+  - **Fan-out**: `to` accepts a single name, an array, or special tokens
+    (`all`, `all_whatsapp`, `all_telegram`). Resolves names → channel +
+    address via the recipients book.
+  - **Camera snapshots**: pass `image_entity: camera.x` and the addon
+    snapshots HA's camera via the Supervisor API and attaches the JPEG
+    on WhatsApp + Telegram in one call.
+  - **Media**: `image_url`, `video_url`, `document_url` (with optional
+    `document_name`) work on both channels.
+  - **Per-automation defaults**: pass `automation_id` and leave `to`
+    empty — the addon falls back to per-automation recipient lists
+    stored in `/share/cinexis/automation_recipient_map.json`.
+  - Returns per-recipient delivery status: `{ ok, sent: [...], failed: [...] }`.
+
+### HA integration card — rewritten
+
+Now shows ONE clean snippet: `rest_command.cinexis_notify` +
+`notify.cinexis_addon` (so HA's GUI automation editor lists it as a
+notify service). Three copy-paste examples: fan-out + camera snapshot,
+all-recipients power-cut alert, Telegram-only maintenance reminder.
+
+### Re-registration fix (cloud-side, deployed)
+
+After an addon update, the customer no longer drops into
+`pending_approval`. New cloud lookup priority in `/api/addon/status`
+and `/api/addon/onboard`:
+
+1. exact `ha_node_id`
+2. 8-char prefix fallback (legacy Alexa-routing path)
+3. `license_key` passed in the request (addon sends its cached key
+   on every call) — auto-attaches the node to that customer
+4. p2p.db node→license chain — finds the customer who owns the
+   bot_licenses row for this node
+5. email (for /onboard only) — auto-claims the node if the email is
+   known and no other customer has it
+
+Only when **all** miss does a brand-new node land in
+`pending_approval`. The addon will recover its previous link
+automatically on the very first /status call after the update.
+
 ## [1.14.0] - 2026-05-26
 
 ### Added — Subscription & Upgrade card (in-addon, no public URLs)

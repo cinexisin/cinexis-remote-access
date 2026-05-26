@@ -27,6 +27,8 @@ DEVICE_SECRET_FILE= f"{STORAGE_DIR}/device_secret"
 CUSTOMER_PROFILE_FILE = f"{STORAGE_DIR}/customer_profile.json"
 TELEGRAM_CONFIG_FILE  = f"{STORAGE_DIR}/telegram_config.json"
 RULES_FILE            = f"{STORAGE_DIR}/notification_rules.json"
+RECIPIENTS_FILE       = f"{STORAGE_DIR}/recipients.json"
+AUTOMATION_MAP_FILE   = f"{STORAGE_DIR}/automation_recipient_map.json"
 DAILY_FILE            = f"{STORAGE_DIR}/daily_summary.json"
 HA_BASE           = "http://supervisor/core"
 CINEXIS_API       = "https://cinexis.cloud"
@@ -126,12 +128,26 @@ def save_customer_profile(data):
     with open(CUSTOMER_PROFILE_FILE, "w") as f:
         json.dump(data, f, indent=2)
 
+def _read_cached_license_key():
+    """The local license_key cache lets the cloud auto-relink this node to
+    its customer even if the customer row's ha_node_id column drifted."""
+    try:
+        with open(LICENSE_KEY_FILE) as f:
+            return f.read().strip() or None
+    except (FileNotFoundError, OSError):
+        return None
+
 def cinexis_addon_call(method, path, payload=None):
     """Call /api/addon/* with node credentials auto-attached. Returns parsed JSON or {'ok':False,...}."""
     node_id, secret = get_node_credentials()
     if not node_id or not secret:
         return {"ok": False, "error": "no_node_credentials"}
     body = {"node_id": node_id, "device_secret": secret}
+    # Send the cached license_key so the cloud can auto-relink if needed.
+    # Safe to expose since cloud only uses it for lookup, not auth.
+    lk = _read_cached_license_key()
+    if lk:
+        body["license_key"] = lk
     if payload: body.update(payload)
     if method == "GET":
         qs = urllib.parse.urlencode(body)
@@ -396,6 +412,140 @@ def render_pending_banner():
 <script>setTimeout(function(){ location.reload(); }, 15000);</script>
 """
 
+def load_recipients():
+    """Recipients book — list of { id, name, channel, address, enabled }.
+    channel ∈ {'whatsapp','telegram'}. address = E.164 phone for WA, chat_id
+    string for Telegram. Used by /notify to fan-out HA notifications without
+    leaking individual phone numbers into HA's configuration.yaml."""
+    try:
+        with open(RECIPIENTS_FILE) as f:
+            data = json.load(f)
+        return data if isinstance(data, list) else []
+    except (FileNotFoundError, json.JSONDecodeError):
+        return []
+
+def save_recipients(recipients):
+    os.makedirs(STORAGE_DIR, exist_ok=True)
+    with open(RECIPIENTS_FILE, "w") as f:
+        json.dump(recipients, f, indent=2)
+
+def load_automation_map():
+    """Per-automation default recipient picks. Keyed by HA automation
+    entity_id (e.g. 'automation.front_door_at_night'), value is a list
+    of recipient names. The rest_command body in HA passes the automation
+    entity_id and /notify resolves recipients from this map if `to` is
+    omitted."""
+    try:
+        with open(AUTOMATION_MAP_FILE) as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+def save_automation_map(m):
+    os.makedirs(STORAGE_DIR, exist_ok=True)
+    with open(AUTOMATION_MAP_FILE, "w") as f:
+        json.dump(m, f, indent=2)
+
+def render_recipients_section(base_path="/"):
+    """Recipients book — customer manages WA + Telegram contacts here,
+    then HA automations reference them by name (no phone numbers in
+    configuration.yaml)."""
+    recipients = load_recipients()
+    rows = ""
+    if recipients:
+        for r in recipients:
+            channel_icon = "📱" if r.get("channel") == "whatsapp" else "💬"
+            enabled = r.get("enabled", True)
+            enabled_pill = ('<span style="background:#22c55e22;color:#22c55e;padding:2px 8px;border-radius:6px;font-size:.72rem;font-weight:600">enabled</span>'
+                            if enabled else
+                            '<span style="background:#64748b22;color:#94a3b8;padding:2px 8px;border-radius:6px;font-size:.72rem">disabled</span>')
+            rows += f"""
+<tr id="r-{esc_html(r.get('id',''))}">
+  <td style="padding:8px 4px">{channel_icon} <strong>{esc_html(r.get('name',''))}</strong></td>
+  <td style="padding:8px 4px;color:#94a3b8;font-family:monospace;font-size:.85rem">{esc_html(r.get('address',''))}</td>
+  <td style="padding:8px 4px">{enabled_pill}</td>
+  <td style="padding:8px 4px;text-align:right">
+    <button class="btn btn-ghost btn-sm" onclick="testRecipient('{esc_html(r.get('id',''))}')">📨 Test</button>
+    <button class="btn btn-ghost btn-sm" onclick="toggleRecipient('{esc_html(r.get('id',''))}')">{('Disable' if enabled else 'Enable')}</button>
+    <button class="btn btn-danger btn-sm" onclick="removeRecipient('{esc_html(r.get('id',''))}')">🗑</button>
+  </td>
+</tr>"""
+    else:
+        rows = '<tr><td colspan="4" style="text-align:center;color:#64748b;padding:30px;font-size:.85rem">No recipients yet. Add Dad / Mom / Family group below so HA automations can reference them by name.</td></tr>'
+
+    return f"""
+<div class="card" id="recipients-card">
+  <div class="card-header"><span class="card-icon">📇</span>Notification Recipients</div>
+  <p class="muted small" style="margin-bottom:14px">
+    Add WhatsApp numbers and Telegram chat IDs by friendly name. HA automations reference them as
+    <code style="background:#1a1f2e;padding:2px 6px;border-radius:4px">to: ["Dad","Mom"]</code> — no phone numbers in your configuration.yaml.
+  </p>
+  <div style="overflow-x:auto">
+    <table style="width:100%;border-collapse:collapse">
+      <thead><tr style="border-bottom:1px solid #1e2d45;color:#94a3b8;font-size:.75rem;text-transform:uppercase;letter-spacing:.05em">
+        <th style="text-align:left;padding:8px 4px">Name</th>
+        <th style="text-align:left;padding:8px 4px">Address</th>
+        <th style="text-align:left;padding:8px 4px">State</th>
+        <th style="text-align:right;padding:8px 4px">Actions</th>
+      </tr></thead>
+      <tbody>{rows}</tbody>
+    </table>
+  </div>
+
+  <details style="margin-top:14px">
+    <summary style="cursor:pointer;color:#818cf8;font-weight:600;font-size:.88rem">+ Add a recipient</summary>
+    <div style="background:#0d1220;border:1px solid #1e2d45;border-radius:10px;padding:14px;margin-top:10px">
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
+        <div style="flex:1 1 130px"><label style="display:block;font-size:.75rem;color:#94a3b8;margin-bottom:3px">Name</label>
+          <input id="r-name" placeholder="e.g. Dad" style="width:100%;padding:8px;border:1px solid #2a2f3c;background:var(--bg);border-radius:6px;color:#e8edf5"/>
+        </div>
+        <div style="flex:0 0 130px"><label style="display:block;font-size:.75rem;color:#94a3b8;margin-bottom:3px">Channel</label>
+          <select id="r-channel" style="width:100%;padding:8px;border:1px solid #2a2f3c;background:var(--bg);border-radius:6px;color:#e8edf5">
+            <option value="whatsapp">📱 WhatsApp</option>
+            <option value="telegram">💬 Telegram</option>
+          </select>
+        </div>
+        <div style="flex:1 1 190px"><label style="display:block;font-size:.75rem;color:#94a3b8;margin-bottom:3px">Address (phone or chat_id)</label>
+          <input id="r-addr" placeholder="919876543210 or -1001234567" style="width:100%;padding:8px;border:1px solid #2a2f3c;background:var(--bg);border-radius:6px;color:#e8edf5;font-family:monospace"/>
+        </div>
+      </div>
+      <button onclick="addRecipient()" class="btn btn-primary btn-sm">Add recipient</button>
+      <div id="r-result" style="margin-top:8px;font-size:.82rem"></div>
+    </div>
+  </details>
+</div>
+
+<script>
+const REC_BASE = '{base_path}';
+async function addRecipient() {{
+  const name    = document.getElementById('r-name').value.trim();
+  const channel = document.getElementById('r-channel').value;
+  const addr    = document.getElementById('r-addr').value.trim();
+  const out     = document.getElementById('r-result');
+  if (!name || !addr) {{ out.style.color = '#ef4444'; out.textContent = 'Name and address are both required'; return; }}
+  out.style.color = '#94a3b8';
+  out.textContent = 'Saving…';
+  const r = await fetch(REC_BASE + 'recipients/add', {{ method:'POST', headers:{{'Content-Type':'application/json'}}, body: JSON.stringify({{ name, channel, address: addr }}) }}).then(r=>r.json());
+  if (r.ok) {{ location.reload(); }}
+  else {{ out.style.color = '#ef4444'; out.textContent = '❌ ' + (r.error || 'failed'); }}
+}}
+async function removeRecipient(id) {{
+  if (!confirm('Remove this recipient? HA automations using their name will fail to deliver.')) return;
+  await fetch(REC_BASE + 'recipients/' + encodeURIComponent(id) + '/remove', {{ method:'POST' }});
+  document.getElementById('r-' + id)?.remove();
+}}
+async function toggleRecipient(id) {{
+  await fetch(REC_BASE + 'recipients/' + encodeURIComponent(id) + '/toggle', {{ method:'POST' }});
+  location.reload();
+}}
+async function testRecipient(id) {{
+  const r = await fetch(REC_BASE + 'recipients/' + encodeURIComponent(id) + '/test', {{ method:'POST' }}).then(r=>r.json()).catch(()=>({{ok:false,error:'network'}}));
+  alert(r.ok ? '✅ Test sent. Check the recipient\\'s phone.' : '❌ ' + (r.error || 'failed'));
+}}
+</script>
+"""
+
 def load_daily_config():
     try:
         with open(DAILY_FILE) as f: return json.load(f)
@@ -452,6 +602,12 @@ def telegram_api(method, payload=None, bot_token=None):
         except: return {"ok": False, "error": f"http_{e.code}"}
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
+def tg_send_test(chat_id):
+    """Send a one-shot Telegram test message to a chat_id."""
+    text = f"🧪 Cinexis test message at {datetime.now(timezone.utc).astimezone().strftime('%I:%M %p %d %b')} — your addon's Telegram bot can reach this chat."
+    r = telegram_api("sendMessage", {"chat_id": chat_id, "text": text})
+    return {"ok": bool(r.get("ok")), "error": r.get("description") or r.get("error")} if not r.get("ok") else {"ok": True}
 
 def wa_service_call(method, path, payload=None):
     """Proxy a request to the local Baileys service (cinexis-wa.js on 127.0.0.1:18083).
@@ -772,81 +928,64 @@ $('#finish').onclick = () => location.href = BASE;
 
 def render_ha_integration_section(base_path="/"):
     """
-    'Use from Home Assistant' card — exposes the addon as REST commands so
-    customers define triggers inside HA's automation editor (the same place
-    they configure everything else) instead of duplicating logic in the
-    addon's own rules screen.
-
-    GreenAPI-style: addon = pipe, HA automations = brain.
+    'Use from Home Assistant' card — one clean rest_command + a notify
+    wrapper. HA automations reference recipients by NAME (set in the
+    Recipients card above). No phone numbers in configuration.yaml.
     """
     return f"""
 <div class="card" id="ha-int-card">
   <div class="card-header"><span class="card-icon">🏠</span>Use from Home Assistant automations</div>
   <p class="muted small">
-    Paste the snippet below into your <code>configuration.yaml</code> and reload <em>YAML configuration → All YAML configuration</em>.
-    You can then call <code>service: notify.cinexis_whatsapp</code> or
-    <code>service: notify.cinexis_telegram</code> from any HA automation, script, or button.
+    One <code>rest_command.cinexis_notify</code> + a <code>notify.cinexis_addon</code> wrapper. HA automations
+    pass <strong>recipient names</strong> (defined in the Recipients card above) — never phone numbers in YAML.
+    Supports text, camera snapshots, images, videos, documents, and fan-out to multiple recipients in one call.
   </p>
 
   <h4 style="margin-top:14px;font-size:.95rem">1. configuration.yaml</h4>
-  <pre id="ha-snippet" style="background:var(--bg);padding:14px;border-radius:8px;font-size:.78rem;overflow-x:auto;line-height:1.55"># Cinexis Remote Access — WhatsApp sender.
-# The addon publishes port 18083 to the HA host, so this URL is reachable
-# from HA Core directly. The addon's WhatsApp session must already be
-# paired (see the WhatsApp card on this page).
-#
-# For Telegram: don't use the addon. HA has a built-in `telegram_bot`
-# integration that works directly with your BotFather token — set it up
-# once and call `notify.telegram` from any automation. (Snippet below.)
+  <pre id="ha-snippet" style="background:var(--bg);padding:14px;border-radius:8px;font-size:.78rem;overflow-x:auto;line-height:1.55"># Cinexis Remote Access — single rest_command + notify wrapper.
+# Recipient names live in the addon's Recipients book; HA automations
+# just reference them.
 
 rest_command:
-  cinexis_whatsapp:
-    url: "http://homeassistant.local.hass.io:18083/send/text"
+  cinexis_notify:
+    url: "http://homeassistant.local.hass.io:18083/notify"
     method: POST
     content_type: "application/json"
-    payload: '{{{{ {{ "to": to, "text": message }} | to_json }}}}'
+    # Required: to + message. Optional: image_url, image_entity (HA
+    # camera entity to snapshot), video_url, document_url, document_name,
+    # automation_id (lets per-automation defaults from the addon UI win
+    # when `to` is omitted).
+    payload: >-
+      {{{{ {{
+        'to':            to            | default(['all']),
+        'message':       message       | default(''),
+        'image_url':     image_url     | default(none),
+        'image_entity':  image_entity  | default(none),
+        'video_url':     video_url     | default(none),
+        'document_url':  document_url  | default(none),
+        'document_name': document_name | default(none),
+        'automation_id': automation_id | default(none),
+      }} | to_json }}}}
 
-  cinexis_whatsapp_image:
-    url: "http://homeassistant.local.hass.io:18083/send/image"
-    method: POST
-    content_type: "application/json"
-    payload: '{{{{ {{ "to": to, "image_url": image_url, "caption": caption }} | to_json }}}}'
-
-# ── Telegram (HA native — no addon involvement) ─────────────────────────
-# Replace the values with your BotFather token + your chat_id.
-telegram_bot:
-  - platform: polling
-    api_key: !secret telegram_bot_token
-    allowed_chat_ids:
-      - !secret telegram_chat_id
-
+# Optional: expose it as a regular notify service so the GUI automation
+# editor lists it as `notify.cinexis_addon`.
 notify:
-  - name: telegram
-    platform: telegram
-    chat_id: !secret telegram_chat_id
-
-# ── Optional: wrap WhatsApp as a notify service too ─────────────────────
-# Lets any automation use `service: notify.cinexis_whatsapp` like a regular
-# notify integration.
-notify:
-  - name: cinexis_whatsapp
+  - name: cinexis_addon
     platform: rest
-    resource: "http://homeassistant.local.hass.io:18083/send/text"
+    resource: "http://homeassistant.local.hass.io:18083/notify"
     method: POST_JSON
-    message_param_name: text
+    message_param_name: message
     target_param_name: to
+    # Optional data the action editor can pass through:
+    # data:
+    #   image_entity: camera.front_door
 </pre>
   <button class="btn btn-primary" onclick="copyHa('ha-snippet')" style="margin-top:6px">📋 Copy configuration.yaml snippet</button>
 
-  <h4 style="margin-top:22px;font-size:.95rem">2. secrets.yaml (so the token never lives in plain configuration.yaml)</h4>
-  <pre id="ha-secrets" style="background:var(--bg);padding:14px;border-radius:8px;font-size:.78rem;overflow-x:auto;line-height:1.55"># /config/secrets.yaml
-telegram_bot_token: "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
-telegram_chat_id:   123456789      # your personal chat — get from @userinfobot
-</pre>
-  <button class="btn btn-primary" onclick="copyHa('ha-secrets')" style="margin-top:6px">📋 Copy secrets.yaml</button>
+  <h4 style="margin-top:22px;font-size:.95rem">2. Examples</h4>
 
-  <h4 style="margin-top:22px;font-size:.95rem">3. Example automation — front door at night</h4>
-  <pre id="ha-auto" style="background:var(--bg);padding:14px;border-radius:8px;font-size:.78rem;overflow-x:auto;line-height:1.55">- alias: Front door opens at night
-  description: WhatsApp + Telegram the family when the door opens between 10pm and 6am
+  <p class="muted small" style="margin-top:14px"><strong>A) Front door opens at night — fan-out + camera snapshot</strong></p>
+  <pre id="ha-ex1" style="background:var(--bg);padding:14px;border-radius:8px;font-size:.78rem;overflow-x:auto;line-height:1.55">- alias: Front door at night
   triggers:
     - trigger: state
       entity_id: binary_sensor.front_door
@@ -856,36 +995,44 @@ telegram_chat_id:   123456789      # your personal chat — get from @userinfobo
       after: "22:00:00"
       before: "06:00:00"
   actions:
-    # WhatsApp via Cinexis addon (your paired number)
-    - service: rest_command.cinexis_whatsapp
+    - service: rest_command.cinexis_notify
       data:
-        to: "919999000001"
-        message: >-
-          🚨 Front door opened at {{{{ now().strftime('%H:%M:%S') }}}}.
-          Last person home: {{{{ states('person.someone') }}}}.
-    # Telegram via HA's native integration (your own bot)
-    - service: notify.telegram
-      data:
-        message: "🚨 Front door (night) — {{{{ now().strftime('%H:%M') }}}}"
-</pre>
-  <button class="btn btn-primary" onclick="copyHa('ha-auto')" style="margin-top:6px">📋 Copy example automation</button>
+        to: ["Dad", "Mom"]                # recipient names from the addon book
+        message: "🚨 Front door opened at {{{{ now().strftime('%H:%M:%S') }}}}"
+        image_entity: camera.front_door    # addon snapshots this and attaches
+        automation_id: automation.front_door_at_night</pre>
+  <button class="btn btn-primary btn-sm" onclick="copyHa('ha-ex1')" style="margin-top:6px">📋 Copy</button>
+
+  <p class="muted small" style="margin-top:18px"><strong>B) Boundary alert — ALL recipients, no media</strong></p>
+  <pre id="ha-ex2" style="background:var(--bg);padding:14px;border-radius:8px;font-size:.78rem;overflow-x:auto;line-height:1.55">- service: rest_command.cinexis_notify
+  data:
+    to: "all"             # everyone enabled in the Recipients book
+    message: "⚡ Power outage detected. Generator started automatically."</pre>
+  <button class="btn btn-primary btn-sm" onclick="copyHa('ha-ex2')" style="margin-top:6px">📋 Copy</button>
+
+  <p class="muted small" style="margin-top:18px"><strong>C) Maintenance reminder — only Telegram users</strong></p>
+  <pre id="ha-ex3" style="background:var(--bg);padding:14px;border-radius:8px;font-size:.78rem;overflow-x:auto;line-height:1.55">- service: rest_command.cinexis_notify
+  data:
+    to: "all_telegram"
+    message: "🔧 Filter due for replacement (last changed 90 days ago)"
+    document_url: "https://your-cdn/maintenance-log.pdf"
+    document_name: "maintenance-log.pdf"</pre>
+  <button class="btn btn-primary btn-sm" onclick="copyHa('ha-ex3')" style="margin-top:6px">📋 Copy</button>
 
   <h4 style="margin-top:22px;font-size:.95rem">3. Or via the GUI automation editor</h4>
-  <ol class="muted small" style="margin-top:8px">
+  <ol class="muted small" style="margin-top:8px;line-height:1.7">
     <li>HA → <strong>Settings → Automations &amp; Scenes → + Create Automation</strong></li>
-    <li>Trigger: pick whatever (state change, time pattern, event…)</li>
-    <li>Action: <strong>Call service → rest_command.cinexis_whatsapp</strong></li>
-    <li>Data fields:
-      <pre style="background:var(--bg);padding:10px;border-radius:6px;font-size:.75rem;margin-top:6px">to: "919999000001"
-message: "Hello from HA 👋"</pre>
-    </li>
+    <li>Pick your trigger (state change, time pattern, event…)</li>
+    <li>Action: <strong>Call service → notify.cinexis_addon</strong></li>
+    <li>Set <code>message</code>, set <code>target</code> = recipient names (or "all"). Optionally add
+        <code>image_entity</code> in the data section to attach a live camera snapshot.</li>
   </ol>
 
   <p class="muted small" style="margin-top:16px;border-top:1px solid #2a2f3c;padding-top:14px">
-    <strong>Why this is better than the addon's own rules editor:</strong> you keep all logic in HA's
-    automation editor (same place you set everything else), can mix &amp; match WA / Telegram /
-    email / mobile push in one automation, and benefit from HA's robust condition / trigger /
-    template engine. The addon is just the WhatsApp + Telegram pipe.
+    <strong>Tip:</strong> set per-automation defaults so each automation routes to the right people
+    automatically — pass <code>automation_id</code> in the call and the addon will fall back to the
+    recipient list saved for that automation_id (in /share/cinexis/automation_recipient_map.json).
+    HA's <code>{{{{ trigger.id }}}}</code> or <code>automation.&lt;name&gt;</code> works.
   </p>
 </div>
 <script>
@@ -1535,6 +1682,7 @@ class IngressHandler(http.server.BaseHTTPRequestHandler):
             # no public cinexis.cloud URLs exposed.
             sub   = render_subscription_card(status, base_path=base)
             lic   = render_license_section()
+            recs  = render_recipients_section(base_path=base)
 
             # Feature cards gated by entitlements. Each card either renders
             # in full or is replaced by a locked-card that opens the in-addon
@@ -1552,11 +1700,12 @@ class IngressHandler(http.server.BaseHTTPRequestHandler):
             voice = render_voice_section() if voice_any \
                     else render_locked_card("🎙️ Voice control (Alexa / Google / Siri)", "Voice control on Pro plan and up")
 
-            # Order: Subscription (top — always visible), License, WhatsApp QR
-            # (prominent), Telegram, HA integration, Daily Summary, Rules,
-            # Voice at the bottom.
+            # Order: Subscription, License, WhatsApp QR, Telegram, Recipients
+            # (so the customer pairs WA/TG first then defines names), HA
+            # integration (shows snippet that references recipient names),
+            # Daily Summary, Rules, Voice at the bottom.
             self.send_html(200, page("Cinexis Setup",
-                sub + lic + wa + tg + ha + daily + rules + voice,
+                sub + lic + wa + tg + recs + ha + daily + rules + voice,
                 base_path=base))
         elif path == "/ha/entities":
             # Fetch the HA entity list so the rule editor can autocomplete.
@@ -1857,6 +2006,72 @@ class IngressHandler(http.server.BaseHTTPRequestHandler):
                     "billing_period": billing_period,
                 })
                 self.send_json(200, result)
+            except Exception as e:
+                self.send_json(500, {"ok": False, "error": str(e)})
+
+        elif path == "/recipients/add":
+            try:
+                body = json.loads(self.read_body() or "{}")
+                name    = (body.get("name") or "").strip()[:60]
+                channel = (body.get("channel") or "whatsapp").strip().lower()
+                address = (body.get("address") or "").strip()
+                if not name or not address or channel not in ("whatsapp", "telegram"):
+                    self.send_json(400, {"ok": False, "error": "name_address_and_valid_channel_required"})
+                    return
+                recipients = load_recipients()
+                # Reject duplicate names (case-insensitive) — names are the
+                # primary key from HA's perspective.
+                if any(r.get("name", "").lower() == name.lower() for r in recipients):
+                    self.send_json(409, {"ok": False, "error": "name_already_exists"})
+                    return
+                import uuid
+                rec = {
+                    "id":      uuid.uuid4().hex[:12],
+                    "name":    name,
+                    "channel": channel,
+                    "address": address,
+                    "enabled": True,
+                    "created_at": int(time.time()),
+                }
+                recipients.append(rec)
+                save_recipients(recipients)
+                self.send_json(200, {"ok": True, "recipient": rec})
+            except Exception as e:
+                self.send_json(500, {"ok": False, "error": str(e)})
+
+        elif path.startswith("/recipients/") and path.endswith("/toggle"):
+            rid = path[len("/recipients/"):-len("/toggle")]
+            recipients = load_recipients()
+            found = False
+            for r in recipients:
+                if r.get("id") == rid:
+                    r["enabled"] = not r.get("enabled", True)
+                    found = True
+                    break
+            if not found:
+                self.send_json(404, {"ok": False, "error": "not_found"})
+                return
+            save_recipients(recipients)
+            self.send_json(200, {"ok": True})
+
+        elif path.startswith("/recipients/") and path.endswith("/remove"):
+            rid = path[len("/recipients/"):-len("/remove")]
+            recipients = [r for r in load_recipients() if r.get("id") != rid]
+            save_recipients(recipients)
+            self.send_json(200, {"ok": True})
+
+        elif path.startswith("/recipients/") and path.endswith("/test"):
+            rid = path[len("/recipients/"):-len("/test")]
+            rec = next((r for r in load_recipients() if r.get("id") == rid), None)
+            if not rec:
+                self.send_json(404, {"ok": False, "error": "not_found"})
+                return
+            try:
+                if rec.get("channel") == "telegram":
+                    result = tg_send_test(rec.get("address"))
+                else:
+                    result = wa_service_call("POST", "/test", {"to": rec.get("address")})
+                self.send_json(200, result if result.get("ok") else {"ok": False, "error": result.get("error", "send_failed")})
             except Exception as e:
                 self.send_json(500, {"ok": False, "error": str(e)})
 

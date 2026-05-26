@@ -194,6 +194,197 @@ app.post('/test', async (req, res) => {
   }
 });
 
+// ── Unified /notify endpoint (the one HA automations call) ───────────────────
+// POST /notify
+// Body shape:
+//   {
+//     to:          "Dad" | ["Dad","Mom"] | "all" | ["all_whatsapp"] | ["all_telegram"]
+//                  - resolves recipient names from /share/cinexis/recipients.json
+//                  - "all" means every enabled recipient on any channel
+//                  - "all_whatsapp" / "all_telegram" filters by channel
+//                  - bare phone numbers / chat_ids are also accepted as a fallback
+//     message:     "Front door opened at 2am"   (required for text+caption)
+//     image_url:   "https://..."        (optional — http(s) URL to a static image)
+//     image_entity:"camera.front_door"  (optional — addon snapshots this camera via HA Supervisor)
+//     video_url:   "https://..."        (optional)
+//     document_url:"https://..."        (optional)
+//     document_name:"invoice.pdf"       (optional, for documents)
+//     automation_id:"automation.front_door_at_night"  (optional — if `to` is missing,
+//                  per-automation defaults are read from automation_recipient_map.json)
+//   }
+// Returns: { ok: true, sent: [{recipient, channel, ok, message_id?}], failed: [...] }
+const RECIPIENTS_FILE     = process.env.RECIPIENTS_FILE     || '/share/cinexis/recipients.json';
+const AUTOMATION_MAP_FILE = process.env.AUTOMATION_MAP_FILE || '/share/cinexis/automation_recipient_map.json';
+const TELEGRAM_CONFIG     = process.env.TELEGRAM_CONFIG_FILE || '/share/cinexis/telegram_config.json';
+
+function loadJsonSafe(file, fallback) {
+  try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch (_) { return fallback; }
+}
+
+async function snapshotHaCamera(entityId) {
+  // The Supervisor token is automatically injected by HA when the addon
+  // has `homeassistant_api: true`. We hit /core/api/camera_proxy/<entity>
+  // which returns a JPEG.
+  const token = process.env.SUPERVISOR_TOKEN;
+  if (!token || !entityId) return null;
+  const url = `http://supervisor/core/api/camera_proxy/${encodeURIComponent(entityId)}`;
+  try {
+    const r = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+    if (!r.ok) { console.warn(`[CINEXIS-WA] camera_proxy ${entityId} → ${r.status}`); return null; }
+    return Buffer.from(await r.arrayBuffer());
+  } catch (e) { console.warn(`[CINEXIS-WA] camera snapshot failed:`, e.message); return null; }
+}
+
+function resolveRecipients(toArg, automationId) {
+  const all = loadJsonSafe(RECIPIENTS_FILE, []);
+  const enabled = all.filter(r => r.enabled !== false);
+
+  // If `to` is empty, fall back to the per-automation default mapping.
+  let names = toArg;
+  if ((!names || (Array.isArray(names) && names.length === 0)) && automationId) {
+    const m = loadJsonSafe(AUTOMATION_MAP_FILE, {});
+    names = m[automationId];
+  }
+  if (typeof names === 'string') names = [names];
+  if (!Array.isArray(names) || names.length === 0) return [];
+
+  const out = [];
+  const seen = new Set();
+  for (const n of names.map(x => String(x).trim()).filter(Boolean)) {
+    // Special tokens
+    if (n === 'all') {
+      for (const r of enabled) {
+        if (!seen.has(r.id)) { out.push(r); seen.add(r.id); }
+      }
+      continue;
+    }
+    if (n === 'all_whatsapp') {
+      for (const r of enabled.filter(x => x.channel === 'whatsapp')) {
+        if (!seen.has(r.id)) { out.push(r); seen.add(r.id); }
+      }
+      continue;
+    }
+    if (n === 'all_telegram') {
+      for (const r of enabled.filter(x => x.channel === 'telegram')) {
+        if (!seen.has(r.id)) { out.push(r); seen.add(r.id); }
+      }
+      continue;
+    }
+    // Match by recipient name (case-insensitive)
+    const matched = enabled.find(r => (r.name || '').toLowerCase() === n.toLowerCase());
+    if (matched) {
+      if (!seen.has(matched.id)) { out.push(matched); seen.add(matched.id); }
+      continue;
+    }
+    // Fallback: treat as raw address. WA = digits only, Telegram = optional minus
+    if (/^[-]?\d{6,}$/.test(n.replace(/\D/g, n.includes('-') ? '' : ''))) {
+      // Default channel guess: starts with '-' → Telegram, else WhatsApp
+      const channel = n.startsWith('-') ? 'telegram' : 'whatsapp';
+      const synthetic = { id: 'inline_' + n, name: n, channel, address: n, enabled: true };
+      if (!seen.has(synthetic.id)) { out.push(synthetic); seen.add(synthetic.id); }
+    }
+  }
+  return out;
+}
+
+async function tgSend(chatId, text, media) {
+  const cfg = loadJsonSafe(TELEGRAM_CONFIG, {});
+  if (!cfg.bot_token) return { ok: false, error: 'no_telegram_token' };
+  let method = 'sendMessage';
+  let payload = { chat_id: chatId, text };
+  if (media && media.kind === 'image' && media.url) {
+    method = 'sendPhoto';
+    payload = { chat_id: chatId, photo: media.url, caption: text };
+  } else if (media && media.kind === 'image' && media.buffer) {
+    // Telegram needs multipart for in-memory image. Use native FormData
+    // + Blob from the buffer (Node 18+; baileys requires 20 anyway).
+    try {
+      const fd = new FormData();
+      fd.append('chat_id', String(chatId));
+      if (text) fd.append('caption', text);
+      fd.append('photo', new Blob([media.buffer], { type: 'image/jpeg' }), 'snapshot.jpg');
+      const r = await fetch(`https://api.telegram.org/bot${cfg.bot_token}/sendPhoto`, {
+        method: 'POST', body: fd,
+      });
+      const d = await r.json();
+      return { ok: !!d.ok, error: d.description, message_id: d.result?.message_id };
+    } catch (e) { return { ok: false, error: e.message }; }
+  } else if (media && media.kind === 'video' && media.url) {
+    method = 'sendVideo';
+    payload = { chat_id: chatId, video: media.url, caption: text };
+  } else if (media && media.kind === 'document' && media.url) {
+    method = 'sendDocument';
+    payload = { chat_id: chatId, document: media.url, caption: text };
+  }
+  try {
+    const r = await fetch(`https://api.telegram.org/bot${cfg.bot_token}/${method}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const d = await r.json();
+    return { ok: !!d.ok, error: d.description, message_id: d.result?.message_id };
+  } catch (e) { return { ok: false, error: e.message }; }
+}
+
+app.post('/notify', async (req, res) => {
+  const body = req.body || {};
+  const message    = String(body.message || '').slice(0, 4096);
+  const automation = body.automation_id || null;
+  const recipients = resolveRecipients(body.to, automation);
+  if (recipients.length === 0) {
+    return res.status(400).json({ ok: false, error: 'no_recipients_resolved', hint: 'Pass `to: "Dad"` or `to: ["Dad","Mom"]` or `to: "all"`. Use recipient names defined in the addon UI.' });
+  }
+  if (!message && !body.image_url && !body.image_entity && !body.video_url && !body.document_url) {
+    return res.status(400).json({ ok: false, error: 'message_or_media_required' });
+  }
+
+  // Resolve any media payload up front so we don't snapshot HA's camera N times.
+  let media = null;
+  if (body.image_entity) {
+    const buf = await snapshotHaCamera(body.image_entity);
+    if (buf) media = { kind: 'image', buffer: buf, url: null };
+  } else if (body.image_url) {
+    media = { kind: 'image', url: body.image_url };
+  } else if (body.video_url) {
+    media = { kind: 'video', url: body.video_url };
+  } else if (body.document_url) {
+    media = { kind: 'document', url: body.document_url, filename: body.document_name };
+  }
+
+  const sent = [];
+  const failed = [];
+  for (const r of recipients) {
+    try {
+      if (r.channel === 'telegram') {
+        const result = await tgSend(r.address, message || '', media);
+        if (result.ok) sent.push({ recipient: r.name, channel: 'telegram', message_id: result.message_id });
+        else           failed.push({ recipient: r.name, channel: 'telegram', error: result.error });
+      } else {
+        // WhatsApp via Baileys
+        if (!connectedPhone) { failed.push({ recipient: r.name, channel: 'whatsapp', error: 'wa_not_connected' }); continue; }
+        const jid = asJid(r.address);
+        let result;
+        if (media && media.kind === 'image' && media.buffer) {
+          result = await sock.sendMessage(jid, { image: media.buffer, caption: message || undefined });
+        } else if (media && media.kind === 'image' && media.url) {
+          result = await sock.sendMessage(jid, { image: { url: media.url }, caption: message || undefined });
+        } else if (media && media.kind === 'video' && media.url) {
+          result = await sock.sendMessage(jid, { video: { url: media.url }, caption: message || undefined });
+        } else if (media && media.kind === 'document' && media.url) {
+          result = await sock.sendMessage(jid, { document: { url: media.url }, fileName: media.filename || 'document', caption: message || undefined });
+        } else {
+          result = await sock.sendMessage(jid, { text: message });
+        }
+        sent.push({ recipient: r.name, channel: 'whatsapp', message_id: result?.key?.id });
+      }
+    } catch (e) {
+      failed.push({ recipient: r.name, channel: r.channel, error: e.message });
+    }
+  }
+  res.json({ ok: true, sent, failed, total: recipients.length });
+});
+
 start().catch(err => {
   console.error('[CINEXIS-WA] startup error:', err);
   process.exit(1);
