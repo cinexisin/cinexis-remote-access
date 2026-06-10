@@ -1,3 +1,27 @@
+## [1.18.0] - 2026-06-10
+
+### Security — per-node FRP tunnel token (replaces the shared secret)
+
+The FRP tunnel token (`cinexis-frp-secret-2024`) was hardcoded into every
+published addon image and validated as a single shared secret by frps — any
+customer could grep it from the image and claim another (offline) customer's
+`{sub}.ha1.cinexis.cloud` subdomain. Closed with per-node tokens:
+
+- The addon now fetches a per-node token from the cloud at registration
+  (`frp_token = HMAC(server-secret, node_id)`), caches it, and writes it into
+  `frpc.toml` as **metadata** (`[metadatas] node_id, node_token`) — NOT as the
+  auth token. The auth token stays the legacy shared token, so frps
+  authenticates every client exactly as before. **Zero regression, no
+  tunnel disruption.**
+- A new frps server plugin (`ops/frps-auth-plugin/`) validates the per-node
+  token and enforces that a node can only claim its own subdomain. Built to
+  fail open and ships in observe mode; deploy + cutover steps are in
+  `ops/frps-auth-plugin/README.md`. Verified in enforce mode: forged tokens
+  and subdomain squatting are rejected; valid + legacy clients pass.
+
+Companion cloud (deployed): `/p2p/register` + `/p2p/heartbeat` now return the
+per-node `frp_token`; signing secret self-bootstraps to a 0600 file.
+
 ## [1.17.0] - 2026-06-10
 
 ### Added — /notify abuse guards (protect your WhatsApp number)

@@ -11,6 +11,7 @@ NODE_ID_FILE="${STORAGE_DIR}/node_id"
 SECRET_FILE="${STORAGE_DIR}/device_secret"
 SHORT_ID_FILE="${STORAGE_DIR}/short_id"
 FRPC_CONFIG="${STORAGE_DIR}/frpc.toml"
+FRP_TOKEN_FILE="${STORAGE_DIR}/frp_token"   # per-node tunnel token from cloud
 HEARTBEAT_INTERVAL=300
 LOG_PREFIX="[Cinexis]"
 NAME_PREFIX="${NAME_PREFIX:-}"
@@ -143,6 +144,16 @@ register_node() {
     status=$(echo "${response}" | jq -r '.status // "error"')
     log "Status: ${status}" >&2
 
+    # Capture the per-node FRP token (if the cloud issued one). Persisted so
+    # write_frpc_config can embed it as metadata. Older cloud versions omit
+    # the field → we simply keep no token and frpc still works on the legacy
+    # shared auth token.
+    local node_token
+    node_token=$(echo "${response}" | jq -r '.frp_token // empty')
+    if [ -n "${node_token}" ]; then
+        printf '%s' "${node_token}" > "${FRP_TOKEN_FILE}" 2>/dev/null && chmod 600 "${FRP_TOKEN_FILE}" 2>/dev/null || true
+    fi
+
     # Also register with cinexis.cloud for Alexa routing (non-blocking — best effort)
     # This links SUBDOMAIN (= ha_node_id) to the customer's license for Alexa directive routing.
     local alexa_payload
@@ -216,6 +227,14 @@ wait_for_approval() {
 
 # ── Write frpc config ──────────────────────────────────────────────────────────
 write_frpc_config() {
+    # Per-node tunnel token (HMAC issued by the cloud at registration). Sent as
+    # frpc METADATA — NOT as the auth token — so frps's existing token-method
+    # auth keeps working unchanged (zero regression). A future frps login plugin
+    # validates node_token == HMAC(secret, node_id) and that this node owns the
+    # subdomain, closing the shared-token squatting hole. Until that plugin is
+    # in enforce mode, this metadata is simply ignored by frps.
+    local node_token=""
+    [ -s "${FRP_TOKEN_FILE}" ] && node_token=$(cat "${FRP_TOKEN_FILE}" 2>/dev/null | tr -d '[:space:]')
     cat > "${FRPC_CONFIG}" << FRPCEOF
 serverAddr = "${FRPS_HOST}"
 serverPort = ${FRPS_PORT}
@@ -223,6 +242,10 @@ serverPort = ${FRPS_PORT}
 [auth]
 method = "token"
 token = "${FRP_TOKEN}"
+
+[metadatas]
+node_id = "${NODE_ID}"
+node_token = "${node_token}"
 
 [log]
 level = "info"
@@ -463,7 +486,7 @@ trap cleanup EXIT INT TERM
 # ── Main ───────────────────────────────────────────────────────────────────────
 main() {
     log "=========================================="
-    log " Cinexis Remote Access v1.17.0"
+    log " Cinexis Remote Access v1.18.0"
     log " + Alexa Smart Home Integration"
     log " + Ingress Management UI"
     log "=========================================="
