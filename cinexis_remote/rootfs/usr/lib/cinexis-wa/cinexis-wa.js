@@ -50,6 +50,15 @@ let lastError      = null;   // surfaced via /status for diagnostics
 
 const SHARED_SECRET = process.env.WA_SHARED_SECRET || '';
 
+// /notify abuse guards — protect the owner's personal WhatsApp number from a
+// runaway HA automation loop (a flapping sensor firing notify hundreds of
+// times would otherwise get their number flagged/banned by WhatsApp).
+let notifyWindow = [];                       // recent /notify timestamps (ms)
+const notifyRecipientLast = new Map();       // channel:addr -> last send ms
+const NOTIFY_MAX_PER_MIN = 30;               // global cap across all calls
+const NOTIFY_MAX_FANOUT  = 50;               // max recipients per single call
+const NOTIFY_RECIPIENT_COOLDOWN_MS = 10_000; // min gap to one recipient
+
 // Fallback WA web version if fetchLatestBaileysVersion() can't reach the net.
 // Keeps the QR working during a transient DNS/connectivity blip at boot.
 const FALLBACK_WA_VERSION = [2, 3000, 1015901307];
@@ -371,13 +380,40 @@ app.post('/notify', requireSecret, async (req, res) => {
   const body = req.body || {};
   const message    = String(body.message || '').slice(0, 4096);
   const automation = body.automation_id || null;
-  const recipients = resolveRecipients(body.to, automation);
+  let recipients = resolveRecipients(body.to, automation);
   if (recipients.length === 0) {
     return res.status(400).json({ ok: false, error: 'no_recipients_resolved', hint: 'Pass `to: "Dad"` or `to: ["Dad","Mom"]` or `to: "all"`. Use recipient names defined in the addon UI.' });
   }
   if (!message && !body.image_url && !body.image_entity && !body.video_url && !body.document_url) {
     return res.status(400).json({ ok: false, error: 'message_or_media_required' });
   }
+
+  // ── Abuse guards (protect the owner's own WhatsApp number from a runaway
+  // automation loop that would get their personal number banned) ──
+  const nowMs = Date.now();
+  // 1. Global per-minute cap across all /notify calls
+  notifyWindow = notifyWindow.filter(t => t > nowMs - 60_000);
+  if (notifyWindow.length >= NOTIFY_MAX_PER_MIN) {
+    console.error(`[CINEXIS-WA] /notify rate cap hit (${notifyWindow.length}/min) — refusing to protect your WhatsApp number from a send loop`);
+    return res.status(429).json({ ok: false, error: 'rate_limited', hint: 'Too many notifications in the last minute — likely an automation loop. Sends paused briefly.' });
+  }
+  // 2. Fan-out cap per single call
+  if (recipients.length > NOTIFY_MAX_FANOUT) {
+    console.warn(`[CINEXIS-WA] /notify fan-out ${recipients.length} capped to ${NOTIFY_MAX_FANOUT}`);
+    recipients = recipients.slice(0, NOTIFY_MAX_FANOUT);
+  }
+  // 3. Per-recipient cooldown — drop dupes hammering the same person
+  recipients = recipients.filter(r => {
+    const key = (r.channel || 'wa') + ':' + r.address;
+    const last = notifyRecipientLast.get(key);
+    if (last && (nowMs - last) < NOTIFY_RECIPIENT_COOLDOWN_MS) return false;
+    notifyRecipientLast.set(key, nowMs);
+    return true;
+  });
+  if (recipients.length === 0) {
+    return res.status(429).json({ ok: false, error: 'recipient_cooldown', hint: 'All targeted recipients were messaged in the last few seconds — skipped to avoid spamming them.' });
+  }
+  notifyWindow.push(nowMs);
 
   // Resolve any media payload up front so we don't snapshot HA's camera N times.
   let media = null;

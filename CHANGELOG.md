@@ -1,3 +1,26 @@
+## [1.17.0] - 2026-06-10
+
+### Added — /notify abuse guards (protect your WhatsApp number)
+
+A flapping HA sensor firing the notify automation hundreds of times could
+get your personal WhatsApp number flagged or banned. The /notify endpoint
+now has a circuit breaker:
+
+- Global cap: 30 notify calls/minute across all automations.
+- Fan-out cap: max 50 recipients per single call.
+- Per-recipient cooldown: 10s minimum gap to the same person (drops dupes
+  from a loop hammering one contact).
+
+Returns HTTP 429 with a clear hint when tripped, so an automation loop
+pauses instead of burning your number.
+
+### Companion cloud (deployed)
+
+- Circuit breaker on the SHARED Cinexis WABA (used by all products):
+  manual + auto kill-switch, quality_rating=RED auto-pause, 60/min global
+  cap, 20s per-recipient cooldown. One product's runaway loop can no
+  longer ban WhatsApp alerts for every product.
+
 ## [1.16.0] - 2026-06-10
 
 ### Fixed — WhatsApp QR never appearing (root causes from a deep-diagnosis pass)
