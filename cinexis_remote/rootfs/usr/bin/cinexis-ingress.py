@@ -222,6 +222,7 @@ def render_subscription_card(status, base_path="/"):
         "ha-remote": "Lite (HA Remote)",
         "ha-voice":  "Pro (HA + Voice)",
         "smart":     "Smart",
+        "ultimate":  "Ultimate",
         "enterprise":"Enterprise",
     }.get(plan, plan or "—")
 
@@ -612,15 +613,24 @@ def tg_send_test(chat_id):
 def wa_service_call(method, path, payload=None):
     """Proxy a request to the local Baileys service (cinexis-wa.js on 127.0.0.1:18083).
     Returns parsed JSON or an {ok:False, error:...} stub on network failure.
+    The WA service now binds 0.0.0.0 and guards mutating endpoints with a
+    shared secret (= the node device_secret) — attach it so our proxy calls
+    aren't rejected.
     """
     url = WA_SERVICE_URL + path
+    headers = {"Content-Type": "application/json"}
+    try:
+        _, secret = get_node_credentials()
+        if secret:
+            headers["x-cinexis-secret"] = secret
+    except Exception:
+        pass
     try:
         if method == "GET":
-            req = urllib.request.Request(url, method="GET")
+            req = urllib.request.Request(url, method="GET", headers=headers)
         else:
             data = json.dumps(payload or {}).encode()
-            req = urllib.request.Request(url, data=data, method=method,
-                                          headers={"Content-Type": "application/json"})
+            req = urllib.request.Request(url, data=data, method=method, headers=headers)
         with urllib.request.urlopen(req, timeout=10) as r:
             return json.loads(r.read().decode())
     except urllib.error.HTTPError as e:
@@ -932,6 +942,15 @@ def render_ha_integration_section(base_path="/"):
     wrapper. HA automations reference recipients by NAME (set in the
     Recipients card above). No phone numbers in configuration.yaml.
     """
+    # The WA service now requires a shared secret (= this node's device_secret)
+    # on /notify. Template it into the generated snippet so the customer's
+    # copy-paste works out of the box. It's their own secret in their own
+    # config — never leaves their HA.
+    try:
+        _, _secret = get_node_credentials()
+    except Exception:
+        _secret = ""
+    secret_line = f"      'secret':        '{_secret}',\n" if _secret else ""
     return f"""
 <div class="card" id="ha-int-card">
   <div class="card-header"><span class="card-icon">🏠</span>Use from Home Assistant automations</div>
@@ -944,7 +963,9 @@ def render_ha_integration_section(base_path="/"):
   <h4 style="margin-top:14px;font-size:.95rem">1. configuration.yaml</h4>
   <pre id="ha-snippet" style="background:var(--bg);padding:14px;border-radius:8px;font-size:.78rem;overflow-x:auto;line-height:1.55"># Cinexis Remote Access — single rest_command + notify wrapper.
 # Recipient names live in the addon's Recipients book; HA automations
-# just reference them.
+# just reference them. The 'secret' below authenticates HA to your addon's
+# WhatsApp service — it's your node's device secret, keep configuration.yaml
+# private (use !secret if you prefer).
 
 rest_command:
   cinexis_notify:
@@ -965,14 +986,15 @@ rest_command:
         'document_url':  document_url  | default(none),
         'document_name': document_name | default(none),
         'automation_id': automation_id | default(none),
-      }} | to_json }}}}
+{secret_line}      }} | to_json }}}}
 
 # Optional: expose it as a regular notify service so the GUI automation
-# editor lists it as `notify.cinexis_addon`.
+# editor lists it as `notify.cinexis_addon`. The ?secret=... authenticates
+# HA to your addon (same device secret as above).
 notify:
   - name: cinexis_addon
     platform: rest
-    resource: "http://homeassistant.local.hass.io:18083/notify"
+    resource: "http://homeassistant.local.hass.io:18083/notify?secret={_secret}"
     method: POST_JSON
     message_param_name: message
     target_param_name: to
@@ -1733,15 +1755,26 @@ class IngressHandler(http.server.BaseHTTPRequestHandler):
             # Keeps the customer's request inside the addon's iframe.
             self.send_json(200, cinexis_addon_call("GET", "/plans"))
         elif path == "/diag":
-            # Diagnostics — what does the cloud think of THIS addon's node?
-            # Useful when a customer reports "WhatsApp QR not showing" etc.
+            # Diagnostics — what does the cloud think of THIS addon's node,
+            # AND is the local WhatsApp service alive? Useful when a customer
+            # reports "WhatsApp QR not showing".
             node_id, _ = get_node_credentials()
             status = cinexis_addon_call("GET", "/status")
+            wa = wa_service_call("GET", "/status")
+            wa_health = {
+                "reachable":   not (isinstance(wa, dict) and str(wa.get("error","")).startswith("wa_service_unreachable")),
+                "connected":   bool(wa.get("connected")) if isinstance(wa, dict) else False,
+                "has_qr":      bool(wa.get("has_qr")) if isinstance(wa, dict) else False,
+                "phone":       wa.get("phone") if isinstance(wa, dict) else None,
+                "last_error":  wa.get("last_error") if isinstance(wa, dict) else None,
+                "reconnect_attempts": wa.get("reconnect_attempts") if isinstance(wa, dict) else None,
+            }
             self.send_json(200, {
                 "ok": True,
-                "addon_version": "1.14.0",
+                "addon_version": "1.16.0",
                 "node_id": node_id,
                 "cloud_status": status,
+                "wa_service": wa_health,
             })
         elif path == "/health":
             self.send_json(200, {"ok": True})

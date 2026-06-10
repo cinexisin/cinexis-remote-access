@@ -1,3 +1,48 @@
+## [1.16.0] - 2026-06-10
+
+### Fixed — WhatsApp QR never appearing (root causes from a deep-diagnosis pass)
+
+The QR was held hostage by license/cloud state and had no crash recovery.
+Three confirmed root causes, all fixed:
+
+- **WA service now starts before the approval gate.** Previously `start_wa`
+  ran only AFTER cloud registration succeeded AND the p2p node was
+  'active' — so during a cloud outage (registration retry loop blocks) or
+  while pending approval (`wait_for_approval` loops forever) the WhatsApp
+  service never launched and the QR never appeared. It now starts right
+  after the ingress UI, before any cloud/approval gate. The owner's
+  personal WhatsApp pairing has nothing to do with license state.
+- **Crash supervision added.** None of the backgrounded services
+  (ingress, WA, alexa) had restart-on-crash — one Baileys throw killed
+  WhatsApp for the whole addon lifetime. A watchdog now respawns any dead
+  child every 20s (capped at 5 to avoid crash-loops).
+- **WA service self-heals instead of dying.** A network blip fetching the
+  WA web version used to throw → `process.exit(1)` → no restart → QR dead
+  forever. Now: pinned-version fallback, retry-on-boot-failure, catch on
+  the reconnect timers, and process-level crash guards. `/status` now
+  surfaces `last_error` + `reconnect_attempts`.
+
+### Changed — `/notify` now reachable from HA + secured
+
+- The Baileys service binds `0.0.0.0` so HA Core's `rest_command.cinexis_notify`
+  can actually reach it over the published port (was 127.0.0.1 — the host
+  port mapping could never connect). Mutating endpoints (`/notify`,
+  `/send/*`, `/test`, `/logout`) are now guarded by a shared secret (= the
+  node device secret); the ingress proxy and the generated HA snippet both
+  attach it automatically.
+- `/diag` now reports local WhatsApp service health (reachable / connected
+  / has_qr / last_error) alongside the cloud status — one call tells you
+  exactly why the QR isn't showing.
+
+### Companion cloud fixes (deployed)
+
+- Razorpay webhook signature now verifies (raw-body HMAC) so a paid
+  customer is actually promoted to active.
+- `/api/addon/plans` returns real prices + razorpay_plan_id (was querying
+  dead column names → empty grid → couldn't subscribe).
+- Lifetime/comp customers (active, no expiry) no longer misread as
+  pending_payment. Added `ultimate` plan entitlements + `plan_pretty`.
+
 ## [1.15.0] - 2026-05-26
 
 ### Added — Recipients book + unified /notify service

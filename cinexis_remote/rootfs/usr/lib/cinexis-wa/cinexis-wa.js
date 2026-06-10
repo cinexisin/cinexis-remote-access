@@ -46,6 +46,13 @@ let currentQR      = null;
 let connectedPhone = null;
 let connectedSince = null;
 let reconnectAttempts = 0;
+let lastError      = null;   // surfaced via /status for diagnostics
+
+const SHARED_SECRET = process.env.WA_SHARED_SECRET || '';
+
+// Fallback WA web version if fetchLatestBaileysVersion() can't reach the net.
+// Keeps the QR working during a transient DNS/connectivity blip at boot.
+const FALLBACK_WA_VERSION = [2, 3000, 1015901307];
 
 function asJid(to) {
   const s = String(to).trim();
@@ -55,8 +62,18 @@ function asJid(to) {
 
 async function start() {
   fs.mkdirSync(AUTH_DIR, { recursive: true });
+  try { fs.chmodSync(AUTH_DIR, 0o700); } catch (_) {}
   const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
-  const { version }          = await fetchLatestBaileysVersion();
+
+  // Don't let a network blip fetching the WA version kill the boot — fall
+  // back to a known-good pinned version so the QR still generates.
+  let version = FALLBACK_WA_VERSION;
+  try {
+    const fetched = await fetchLatestBaileysVersion();
+    if (fetched && fetched.version) version = fetched.version;
+  } catch (e) {
+    console.warn('[CINEXIS-WA] fetchLatestBaileysVersion failed, using pinned fallback:', e.message);
+  }
 
   sock = makeWASocket({
     version,
@@ -65,7 +82,7 @@ async function start() {
     printQRInTerminal:   false,
     syncFullHistory:     false,
     markOnlineOnConnect: false,
-    browser:             ['Cinexis HA Addon', 'Chrome', '1.11.0'],
+    browser:             ['Cinexis HA Addon', 'Chrome', '1.16.0'],
   });
 
   sock.ev.on('creds.update', saveCreds);
@@ -107,7 +124,14 @@ async function start() {
       reconnectAttempts++;
       const backoff = Math.min(60_000, 1500 * 2 ** Math.min(reconnectAttempts, 5));
       console.warn(`[CINEXIS-WA] disconnected (code ${code}); retry in ${backoff / 1000}s`);
-      setTimeout(start, backoff);
+      // start() is async and can throw (network blip fetching version); an
+      // uncaught rejection here would silently kill the process. Catch it
+      // and re-schedule so reconnect always self-heals.
+      setTimeout(() => { start().catch(e => {
+        lastError = e && e.message ? e.message : String(e);
+        console.error('[CINEXIS-WA] reconnect start() threw:', lastError, '— retrying in 30s');
+        setTimeout(() => start().catch(() => {}), 30000);
+      }); }, backoff);
     }
   });
 }
@@ -116,6 +140,20 @@ async function start() {
 const app = express();
 app.use(express.json({ limit: '2mb' }));
 
+// Shared-secret guard for mutating / sending endpoints. We bind 0.0.0.0 so
+// HA Core can reach /notify, which means the port is reachable from the HA
+// host network — protect the dangerous verbs. Reads come through unguarded
+// (status/qr only expose pairing state, no send capability). The ingress
+// proxy and HA rest_command attach the secret via x-cinexis-secret or
+// ?secret=. If WA_SHARED_SECRET is unset (older entrypoint), guard is a
+// no-op so we don't break upgrades.
+function requireSecret(req, res, next) {
+  if (!SHARED_SECRET) return next();
+  const provided = req.headers['x-cinexis-secret'] || req.query.secret || (req.body && req.body.secret);
+  if (provided && String(provided) === SHARED_SECRET) return next();
+  return res.status(401).json({ error: 'unauthorized' });
+}
+
 app.get('/status', (_req, res) => {
   res.json({
     connected:        !!connectedPhone,
@@ -123,6 +161,8 @@ app.get('/status', (_req, res) => {
     since:            connectedSince,
     has_qr:           !!currentQR,
     auth_dir_exists:  fs.existsSync(AUTH_DIR),
+    last_error:       lastError,
+    reconnect_attempts: reconnectAttempts,
   });
 });
 
@@ -136,7 +176,7 @@ app.get('/qr', (_req, res) => {
   res.json({ qr_data_url: currentQR });
 });
 
-app.post('/send/text', async (req, res) => {
+app.post('/send/text', requireSecret, async (req, res) => {
   if (!connectedPhone) return res.status(503).json({ error: 'not_connected' });
   const { to, text } = req.body || {};
   if (!to || !text) return res.status(400).json({ error: 'to_and_text_required' });
@@ -150,7 +190,7 @@ app.post('/send/text', async (req, res) => {
   }
 });
 
-app.post('/send/image', async (req, res) => {
+app.post('/send/image', requireSecret, async (req, res) => {
   if (!connectedPhone) return res.status(503).json({ error: 'not_connected' });
   const { to, image_url, caption } = req.body || {};
   if (!to || !image_url) return res.status(400).json({ error: 'to_and_image_url_required' });
@@ -167,7 +207,7 @@ app.post('/send/image', async (req, res) => {
   }
 });
 
-app.post('/logout', async (_req, res) => {
+app.post('/logout', requireSecret, async (_req, res) => {
   try {
     if (sock) await sock.logout().catch(() => {});
   } finally {
@@ -181,7 +221,7 @@ app.post('/logout', async (_req, res) => {
 });
 
 // Convenience for the ingress UI's "Send test" button
-app.post('/test', async (req, res) => {
+app.post('/test', requireSecret, async (req, res) => {
   if (!connectedPhone) return res.status(503).json({ error: 'not_connected' });
   const to   = (req.body?.to || connectedPhone);
   const text = req.body?.text || `🧪 Cinexis test message at ${new Date().toLocaleString('en-IN')} — your addon's WhatsApp is wired up correctly.`;
@@ -327,7 +367,7 @@ async function tgSend(chatId, text, media) {
   } catch (e) { return { ok: false, error: e.message }; }
 }
 
-app.post('/notify', async (req, res) => {
+app.post('/notify', requireSecret, async (req, res) => {
   const body = req.body || {};
   const message    = String(body.message || '').slice(0, 4096);
   const automation = body.automation_id || null;
@@ -385,14 +425,40 @@ app.post('/notify', async (req, res) => {
   res.json({ ok: true, sent, failed, total: recipients.length });
 });
 
-start().catch(err => {
-  console.error('[CINEXIS-WA] startup error:', err);
-  process.exit(1);
+// Boot the Baileys socket with retry. A network failure inside start()
+// (e.g. fetchLatestBaileysVersion) used to throw → process.exit(1) → the
+// bash entrypoint never restarted it → QR dead forever. Now we retry the
+// boot itself with backoff so a transient blip self-heals; the bash
+// watchdog is the outer safety net.
+let bootAttempts = 0;
+function bootWA() {
+  start().catch(err => {
+    bootAttempts++;
+    lastError = err && err.message ? err.message : String(err);
+    const backoff = Math.min(60000, 2000 * 2 ** Math.min(bootAttempts, 5));
+    console.error(`[CINEXIS-WA] startup error (attempt ${bootAttempts}): ${lastError} — retrying in ${backoff/1000}s`);
+    setTimeout(bootWA, backoff);
+  });
+}
+bootWA();
+
+// Bind 0.0.0.0 so HA Core can reach the /notify endpoint over the addon's
+// published port (rest_command.cinexis_notify). The mutating endpoints are
+// guarded by WA_SHARED_SECRET (see requireSecret middleware) so opening the
+// bind doesn't create an unauthenticated send surface.
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`[CINEXIS-WA] HTTP service listening on 0.0.0.0:${PORT}`);
 });
 
-app.listen(PORT, '127.0.0.1', () => {
-  console.log(`[CINEXIS-WA] HTTP service listening on 127.0.0.1:${PORT}`);
+// Crash guards — log + exit predictably; the bash watchdog respawns us.
+process.on('unhandledRejection', (reason) => {
+  console.error('[CINEXIS-WA] unhandledRejection:', reason && reason.message ? reason.message : reason);
 });
-
+process.on('uncaughtException', (err) => {
+  console.error('[CINEXIS-WA] uncaughtException:', err && err.message ? err.message : err);
+  // Don't exit on every uncaught — many Baileys stream errors are recoverable
+  // via the reconnect path. Only exit on truly fatal ones.
+  if (err && /EADDRINUSE|EACCES/.test(String(err.code || err.message))) process.exit(1);
+});
 process.on('SIGTERM', () => { console.log('[CINEXIS-WA] SIGTERM, exiting'); process.exit(0); });
 process.on('SIGINT',  () => { console.log('[CINEXIS-WA] SIGINT, exiting');  process.exit(0); });

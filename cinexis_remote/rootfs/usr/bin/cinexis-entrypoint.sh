@@ -286,7 +286,11 @@ heartbeat_loop() {
 # ── Start ingress UI ───────────────────────────────────────────────────────────
 start_ingress() {
     log "Starting ingress UI on port ${INGRESS_PORT}..."
-    INGRESS_PORT="${INGRESS_PORT}" python3 /usr/bin/cinexis-ingress.py &
+    # Pass WA_SERVICE_URL so the ingress proxy always points at the right
+    # WhatsApp service port even if WA_PORT is overridden in config.
+    INGRESS_PORT="${INGRESS_PORT}" \
+    WA_SERVICE_URL="http://127.0.0.1:${WA_PORT}" \
+        python3 /usr/bin/cinexis-ingress.py &
     INGRESS_PID=$!
     sleep 1
     if kill -0 "${INGRESS_PID}" 2>/dev/null; then
@@ -308,8 +312,14 @@ start_wa() {
     fi
     log "Starting WhatsApp Web service on port ${WA_PORT}..."
     cd /usr/lib/cinexis-wa
+    # tee to both the persistent log AND container stdout so Baileys crashes
+    # are visible in HA's addon "Log" tab (not just the hidden share file).
     WA_PORT="${WA_PORT}" WA_AUTH_DIR="${STORAGE_DIR}/wa-auth" \
-        node cinexis-wa.js >> "${STORAGE_DIR}/cinexis-wa.log" 2>&1 &
+    WA_SHARED_SECRET="${DEVICE_SECRET:-}" \
+        node cinexis-wa.js 2>&1 | while IFS= read -r line; do
+            echo "[wa] ${line}"
+            echo "${line}" >> "${STORAGE_DIR}/cinexis-wa.log"
+        done &
     WA_PID=$!
     cd - > /dev/null
     sleep 2
@@ -389,10 +399,59 @@ start_alexa_handler() {
 }
 
 # ── Cleanup ────────────────────────────────────────────────────────────────────
+# ── Service watchdog ─────────────────────────────────────────────────────────
+# None of the backgrounded services (ingress, WA, alexa) had restart-on-crash.
+# If any died — a Baileys throw, a python exception — it stayed dead for the
+# whole addon lifetime and the customer lost that feature silently. This loop
+# checks every 20s and respawns a dead child, capped at 5 respawns each to
+# avoid a crash-loop hammering CPU. frpc keeps its own exec-restart via main().
+WATCHDOG_PID=""
+declare -A CRASHES
+service_watchdog() {
+    while true; do
+        sleep 20
+        [ "${CLEAN_SHUTDOWN}" = "true" ] && return 0
+
+        # Ingress UI (always expected to run)
+        if [ -n "${INGRESS_PID}" ] && ! kill -0 "${INGRESS_PID}" 2>/dev/null; then
+            CRASHES[ingress]=$(( ${CRASHES[ingress]:-0} + 1 ))
+            if [ "${CRASHES[ingress]}" -le 5 ]; then
+                warn "Ingress UI died — respawning (#${CRASHES[ingress]})"
+                start_ingress
+            fi
+        fi
+
+        # WhatsApp Web service (only if installed)
+        if [ -f /usr/lib/cinexis-wa/cinexis-wa.js ]; then
+            if [ -n "${WA_PID}" ] && ! kill -0 "${WA_PID}" 2>/dev/null; then
+                CRASHES[wa]=$(( ${CRASHES[wa]:-0} + 1 ))
+                if [ "${CRASHES[wa]}" -le 5 ]; then
+                    warn "WhatsApp service died — respawning (#${CRASHES[wa]})"
+                    start_wa
+                elif [ "${CRASHES[wa]}" -eq 6 ]; then
+                    err "WhatsApp service crashed 5×, giving up. Check the addon Log tab."
+                fi
+            fi
+        fi
+
+        # Alexa handler (only when self-hosted backend + licensed)
+        if [ "${ALEXA_BACKEND}" != "bot" ] && [ -n "${LICENSE_KEY}" ]; then
+            if [ -n "${ALEXA_PID}" ] && ! kill -0 "${ALEXA_PID}" 2>/dev/null; then
+                CRASHES[alexa]=$(( ${CRASHES[alexa]:-0} + 1 ))
+                if [ "${CRASHES[alexa]}" -le 5 ]; then
+                    warn "Alexa handler died — respawning (#${CRASHES[alexa]})"
+                    start_alexa_handler
+                fi
+            fi
+        fi
+    done
+}
+
 cleanup() {
     CLEAN_SHUTDOWN=true
     log "Shutting down..."
     kill_frpc
+    [ -n "${WATCHDOG_PID}" ]    && kill "${WATCHDOG_PID}"   2>/dev/null || true
     [ -n "${NGINX_PID}" ]       && kill "${NGINX_PID}"      2>/dev/null || true
     [ -n "${HEARTBEAT_PID:-}" ] && kill "${HEARTBEAT_PID}"  2>/dev/null || true
     [ -n "${ALEXA_PID}" ]       && kill "${ALEXA_PID}"      2>/dev/null || true
@@ -404,7 +463,7 @@ trap cleanup EXIT INT TERM
 # ── Main ───────────────────────────────────────────────────────────────────────
 main() {
     log "=========================================="
-    log " Cinexis Remote Access v1.15.0"
+    log " Cinexis Remote Access v1.16.0"
     log " + Alexa Smart Home Integration"
     log " + Ingress Management UI"
     log "=========================================="
@@ -414,6 +473,17 @@ main() {
     # Start ingress UI immediately — HA checks ingress port on startup
     # Must be first so the web UI is available before any network calls
     start_ingress
+
+    # ── Start the WhatsApp Web service NOW, before any cloud/approval gate ──
+    # The owner's personal WhatsApp pairing (the QR) has NOTHING to do with
+    # license approval or cloud reachability. Previously start_wa ran only
+    # AFTER register_node succeeded AND the node was p2p-'active' — so during
+    # a cloud outage (registration loop blocks) or while pending approval
+    # (wait_for_approval loops forever) the WA service never launched and the
+    # QR never appeared. Starting it here makes the QR available the instant
+    # the addon boots, in every state. (Alexa / nginx / frpc legitimately
+    # need registration, so they stay gated below.)
+    start_wa
 
     ensure_node_id
     ensure_secret
@@ -453,10 +523,10 @@ main() {
         *)        err "Unexpected status: ${status}"; sleep 30; exec /usr/bin/cinexis-entrypoint.sh ;;
     esac
 
-    # Start Alexa handler (before FRP) so it's ready when tunnel connects
+    # Start Alexa handler (before FRP) so it's ready when tunnel connects.
+    # (start_wa already ran near the top of main(), before the approval gate.)
     write_alexa_proxy_config
     start_alexa_handler
-    start_wa
 
     start_nginx
     start_frpc
@@ -471,6 +541,10 @@ main() {
 
     heartbeat_loop &
     HEARTBEAT_PID=$!
+
+    # Respawn any backgrounded child (ingress/WA/alexa) that dies.
+    service_watchdog &
+    WATCHDOG_PID=$!
 
     wait "${FRPC_PID}" || true
     [ "${CLEAN_SHUTDOWN}" = "true" ] && exit 0
