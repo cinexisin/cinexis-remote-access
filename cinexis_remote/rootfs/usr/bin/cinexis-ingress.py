@@ -230,7 +230,10 @@ def render_subscription_card(status, base_path="/"):
     if trial_end:
         exp_label = f"Trial ends: " + datetime.fromtimestamp(trial_end, tz=timezone.utc).astimezone().strftime("%d %b %Y")
     elif expires_at:
-        exp_label = f"Renews: " + datetime.fromtimestamp(expires_at, tz=timezone.utc).astimezone().strftime("%d %b %Y")
+        # Only say "Renews" when there's actually auto-debit. Payment-Link
+        # customers (auto_renew=0) don't auto-renew — say "Expires".
+        _verb = "Renews" if auto_renew else "Expires"
+        exp_label = f"{_verb}: " + datetime.fromtimestamp(expires_at, tz=timezone.utc).astimezone().strftime("%d %b %Y")
 
     status_pill_color = {
         "active":   "#22c55e",
@@ -241,7 +244,13 @@ def render_subscription_card(status, base_path="/"):
 
     legacy_badge = '<span style="background:#fbbf24;color:#0b0e14;font-size:.7rem;padding:2px 8px;border-radius:6px;font-weight:700;margin-left:8px">⚡ legacy</span>' if legacy else ''
     autopay_badge = ('<span style="color:#22c55e;font-size:.75rem;margin-left:8px">↻ Auto-pay on</span>' if auto_renew else
-                     '<span style="color:#64748b;font-size:.75rem;margin-left:8px">Auto-pay off</span>')
+                     '<span style="color:#94a3b8;font-size:.75rem;margin-left:8px">Renews manually</span>')
+
+    # Explain the manual-renewal model so Payment-Link customers don't expect an
+    # auto-charge (and aren't surprised when the plan lapses without action).
+    renewal_note = ''
+    if not auto_renew and lic_status in ('active', 'trial'):
+        renewal_note = '<p style="color:#94a3b8;font-size:.72rem;margin:0 0 12px">💡 No auto-charge — we will email you a secure payment link before your plan expires. One tap to renew.</p>'
 
     return f"""
 <div class="card" id="sub-card">
@@ -258,6 +267,7 @@ def render_subscription_card(status, base_path="/"):
       <div style="font-size:.78rem;color:#94a3b8;margin-top:4px">{exp_label}</div>
     </div>
   </div>
+  {renewal_note}
   <div style="display:flex;gap:10px;flex-wrap:wrap">
     <button onclick="openUpgradeModal()" style="padding:9px 18px;border-radius:8px;border:none;cursor:pointer;background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff;font-weight:600;font-size:.88rem">
       💎 Upgrade / change plan

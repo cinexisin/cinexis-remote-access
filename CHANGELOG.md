@@ -1,3 +1,19 @@
+## [1.19.4] - 2026-06-11
+
+### Changed — Subscription card tells the truth about renewals
+
+- Billing is via Razorpay Payment Links (no auto-debit on this account), so
+  the card no longer implies auto-renewal it can't do. For manual-renewal
+  customers it now shows **"Expires: <date>"** (not "Renews"), a **"Renews
+  manually"** badge (not "Auto-pay off"), and a one-line note: *"No
+  auto-charge — we will email you a secure payment link before your plan
+  expires. One tap to renew."* Genuine auto-pay subscriptions still show
+  "↻ Auto-pay on" + "Renews".
+
+This pairs with cloud-side fixes that make the renewal email carry an actual
+one-tap payment link, and that recover any payment whose checkout redirect
+was interrupted (so a paid customer is always activated).
+
 ## [1.19.3] - 2026-06-11
 
 ### Fixed — Upgrade / change-plan was blocked on your own plan
