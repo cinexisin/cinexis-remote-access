@@ -227,8 +227,12 @@ def render_subscription_card(status, base_path="/"):
     }.get(plan, plan or "—")
 
     exp_label = ""
-    if trial_end:
-        exp_label = f"Trial ends: " + datetime.fromtimestamp(trial_end, tz=timezone.utc).astimezone().strftime("%d %b %Y")
+    # Show "Trial ends" ONLY while genuinely on trial. A converted/paid customer
+    # can still carry a trial_ends_at from their old trial window — showing it
+    # then is the "stuck on a past trial date" bug. Once active/paid, show the
+    # real paid expiry instead.
+    if trial_end and lic_status == 'trial':
+        exp_label = "Trial ends: " + datetime.fromtimestamp(trial_end, tz=timezone.utc).astimezone().strftime("%d %b %Y")
     elif expires_at:
         # Only say "Renews" when there's actually auto-debit. Payment-Link
         # customers (auto_renew=0) don't auto-renew — say "Expires".

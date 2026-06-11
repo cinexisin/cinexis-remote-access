@@ -1,3 +1,13 @@
+## [1.19.5] - 2026-06-11
+
+### Fixed — card stuck on an old "Trial ends" date after paying
+
+- The subscription card showed "Trial ends: <date>" whenever a `trial_ends_at`
+  was set — even after the customer paid and became active, so a converted
+  customer saw a stale past/near trial date instead of their paid expiry. The
+  card now shows "Trial ends" **only while genuinely on trial**; once active/paid
+  it shows the real **Expires / Renews** date.
+
 ## [1.19.4] - 2026-06-11
 
 ### Changed — Subscription card tells the truth about renewals
