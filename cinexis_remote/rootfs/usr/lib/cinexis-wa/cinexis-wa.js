@@ -21,13 +21,26 @@
 
 'use strict';
 
-const {
-  default:                makeWASocket,
-  useMultiFileAuthState,
-  fetchLatestBaileysVersion,
-  DisconnectReason,
-  isJidGroup,
-} = require('@whiskeysockets/baileys');
+// Baileys is ESM-only in recent releases, so it CANNOT be require()'d from
+// this CommonJS file — doing so throws ERR_REQUIRE_ESM at module load and the
+// whole WhatsApp service dies before it starts. Load it via dynamic import()
+// at boot instead: that works for both ESM and CJS builds and is version-proof.
+let makeWASocket, useMultiFileAuthState, fetchLatestBaileysVersion, DisconnectReason;
+let _baileysLoaded = false;
+async function loadBaileys() {
+  if (_baileysLoaded) return;
+  const b = await import('@whiskeysockets/baileys');
+  // Handle both shapes: ESM (default = makeWASocket, named exports on the
+  // namespace) and CJS-interop (everything under .default).
+  const lib = (b && b.default && (b.default.useMultiFileAuthState || b.default.makeWASocket)) ? b.default : b;
+  makeWASocket              = (typeof b.default === 'function') ? b.default : (lib.makeWASocket || b.makeWASocket);
+  useMultiFileAuthState     = lib.useMultiFileAuthState     || b.useMultiFileAuthState;
+  fetchLatestBaileysVersion = lib.fetchLatestBaileysVersion || b.fetchLatestBaileysVersion;
+  DisconnectReason          = lib.DisconnectReason          || b.DisconnectReason;
+  if (typeof makeWASocket !== 'function') throw new Error('baileys loaded but makeWASocket not found');
+  _baileysLoaded = true;
+  console.log('[CINEXIS-WA] Baileys loaded via dynamic import');
+}
 
 const QRCode  = require('qrcode');
 const express = require('express');
@@ -47,6 +60,7 @@ let connectedPhone = null;
 let connectedSince = null;
 let reconnectAttempts = 0;
 let lastError      = null;   // surfaced via /status for diagnostics
+let everConnected  = false;  // once true, NEVER wipe auth on boot failures
 
 const SHARED_SECRET = process.env.WA_SHARED_SECRET || '';
 
@@ -70,6 +84,7 @@ function asJid(to) {
 }
 
 async function start() {
+  await loadBaileys();   // dynamic import — must run before any baileys symbol is used
   fs.mkdirSync(AUTH_DIR, { recursive: true });
   try { fs.chmodSync(AUTH_DIR, 0o700); } catch (_) {}
   const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
@@ -110,6 +125,7 @@ async function start() {
 
     if (connection === 'open') {
       reconnectAttempts = 0;
+      everConnected = true;   // we have a real pairing now — never auto-wipe it
       currentQR = null;
       const u = sock.user?.id || '';
       connectedPhone = u.split('@')[0]?.split(':')[0] || null;
@@ -471,13 +487,13 @@ function bootWA() {
   start().catch(err => {
     bootAttempts++;
     lastError = err && err.message ? err.message : String(err);
-    // Corrupt-auth recovery: if start() keeps failing, the most common cause
-    // is a half-written / corrupt auth state in /share/cinexis/wa-auth (which
-    // survives addon updates, so a reinstall doesn't clear it). After 3
-    // consecutive failures, wipe it so the next boot starts fresh and shows a
-    // new QR instead of crash-looping forever.
-    if (bootAttempts === 3) {
-      try { fs.rmSync(AUTH_DIR, { recursive: true, force: true }); console.warn('[CINEXIS-WA] 3 boot failures — wiped possibly-corrupt auth state to recover; a fresh QR will appear.'); }
+    // Corrupt-auth recovery: if start() keeps failing AND we've never had a
+    // successful connection, the cause may be a half-written auth state in
+    // /share/cinexis/wa-auth. After 3 failures, wipe it so the next boot starts
+    // fresh. Guarded by !everConnected so we NEVER un-pair a healthy session
+    // that's just hitting a transient (network) error.
+    if (bootAttempts === 3 && !everConnected) {
+      try { fs.rmSync(AUTH_DIR, { recursive: true, force: true }); console.warn('[CINEXIS-WA] 3 boot failures, never connected — wiped possibly-corrupt auth state; a fresh QR will appear.'); }
       catch (_) {}
     }
     const backoff = Math.min(60000, 2000 * 2 ** Math.min(bootAttempts, 5));

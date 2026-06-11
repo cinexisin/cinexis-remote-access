@@ -8,7 +8,7 @@
     "start": "node cinexis-wa.js"
   },
   "dependencies": {
-    "@whiskeysockets/baileys": "^6.7.18",
+    "@whiskeysockets/baileys": "6.7.18",
     "express": "^4.21.1",
     "pino": "^9.5.0",
     "qrcode": "^1.5.4"

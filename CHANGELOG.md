@@ -1,3 +1,23 @@
+## [1.19.2] - 2026-06-11
+
+### Fixed — WhatsApp service crash (the real root cause)
+
+- **WhatsApp never started because of `ERR_REQUIRE_ESM`.** Recent Baileys
+  builds are ESM-only and can no longer be loaded with `require()` from our
+  CommonJS service — the process crashed on startup before it could ever show
+  a QR. The 1.19.1 "self-recovery" helped the symptom but couldn't fix this,
+  because the crash happened on every boot.
+- The WhatsApp library is now loaded with a dynamic `import()` (`loadBaileys()`),
+  which works whether the package ships as ESM or CommonJS. Verified locally:
+  `makeWASocket`, `useMultiFileAuthState`, `fetchLatestBaileysVersion` and
+  `DisconnectReason` all resolve correctly.
+- **Pinned `@whiskeysockets/baileys` to exact `6.7.18`** (was `^6.7.18`) so the
+  build can't silently float to an incompatible newer release — this is what
+  caused the regression in the field.
+- Hardened the auth-wipe guard: a healthy paired session (`everConnected`) is
+  now *never* auto-wiped on a transient boot failure, so you don't have to
+  re-scan the QR after a hiccup.
+
 ## [1.19.1] - 2026-06-11
 
 ### Changed — cleaner dashboard for non-technical users
