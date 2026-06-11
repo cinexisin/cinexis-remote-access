@@ -290,12 +290,13 @@ def render_subscription_card(status, base_path="/"):
       <h2 style="margin:0;font-size:1.25rem">Pick a plan</h2>
       <button onclick="closeUpgradeModal()" style="background:transparent;border:none;color:#94a3b8;font-size:1.4rem;cursor:pointer">×</button>
     </div>
-    <p style="color:#94a3b8;font-size:.85rem;margin:0 0 18px">Switch tiers anytime. Razorpay handles payment — Cinexis never sees your card or UPI details.</p>
+    <p style="color:#94a3b8;font-size:.85rem;margin:0 0 14px">Change your plan <strong>or billing cycle</strong> anytime — e.g. switch Monthly → Yearly on the same plan. Razorpay handles payment; Cinexis never sees your card or UPI details.</p>
+    <div style="font-size:.72rem;color:#64748b;text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px">Billing cycle</div>
     <div id="up-billing-row" style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap">
-      <button data-period="monthly"    onclick="setBillingPeriod(this)" class="up-period up-active">Monthly</button>
-      <button data-period="quarterly"  onclick="setBillingPeriod(this)" class="up-period">Quarterly</button>
-      <button data-period="halfyearly" onclick="setBillingPeriod(this)" class="up-period">Half-yearly</button>
-      <button data-period="yearly"     onclick="setBillingPeriod(this)" class="up-period">Yearly</button>
+      <button data-period="monthly"    onclick="setBillingPeriod(this)" class="up-period{' up-active' if billing=='monthly' else ''}">Monthly</button>
+      <button data-period="quarterly"  onclick="setBillingPeriod(this)" class="up-period{' up-active' if billing=='quarterly' else ''}">Quarterly</button>
+      <button data-period="halfyearly" onclick="setBillingPeriod(this)" class="up-period{' up-active' if billing=='halfyearly' else ''}">Half-yearly</button>
+      <button data-period="yearly"     onclick="setBillingPeriod(this)" class="up-period{' up-active' if billing=='yearly' else ''}">Yearly</button>
     </div>
     <div id="up-plans-grid">
       <div style="text-align:center;padding:30px;color:#64748b">⏳ Loading plans…</div>
@@ -315,7 +316,7 @@ def render_subscription_card(status, base_path="/"):
 
 <script>
 const SUB_BASE = '{base_path}';
-let __upBilling = 'monthly';
+let __upBilling = {json.dumps(billing)};   // default to the customer's CURRENT cycle so switching is one click
 let __upPlansCache = null;
 
 function openUpgradeModal() {{

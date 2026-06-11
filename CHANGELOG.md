@@ -1,3 +1,14 @@
+## [1.19.6] - 2026-06-11
+
+### Changed — changing billing cycle on your current plan is now obvious
+
+- The upgrade modal opens on your **current** billing cycle (was always
+  "Monthly"), with a clear **"Billing cycle"** label and a hint that you can
+  switch Monthly → Yearly on the same plan. The actual ability to switch cycle
+  on your current tier shipped in 1.19.3 ("Switch to <period> billing"); this
+  makes it discoverable so customers can self-serve quarterly / half-yearly /
+  yearly without picking a different tier.
+
 ## [1.19.5] - 2026-06-11
 
 ### Fixed — card stuck on an old "Trial ends" date after paying
