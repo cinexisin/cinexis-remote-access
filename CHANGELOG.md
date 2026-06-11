@@ -1,3 +1,25 @@
+## [1.19.3] - 2026-06-11
+
+### Fixed — Upgrade / change-plan was blocked on your own plan
+
+- The upgrade modal showed "✓ Your current plan" (no pay button) for any
+  plan matching your tier — even while on a **trial**. So a trial user
+  couldn't pay to activate, and nobody could change billing period on the
+  same tier. Now a plan is treated as "current" only when you're **paid**
+  AND on that exact plan+period. Otherwise you get a clear action button:
+  **"Activate this plan"** (on trial/expired) or **"Switch to <period>
+  billing"** (same tier, different cycle). Quarterly / half-yearly / yearly
+  on your current tier are now selectable.
+- The pay button now appears for any priced billing period. Previously it
+  required a synced `razorpay_plan_id`, a leftover from the old
+  Subscriptions flow; billing now uses Payment Links, which only need the
+  price.
+
+### Changed
+
+- Approval-wait logs show only the first 8 chars of the node_id (it's an
+  installation identifier and logs get pasted into support chats).
+
 ## [1.19.2] - 2026-06-11
 
 ### Fixed — WhatsApp service crash (the real root cause)

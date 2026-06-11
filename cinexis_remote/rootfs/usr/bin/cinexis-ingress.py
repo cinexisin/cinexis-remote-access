@@ -333,20 +333,30 @@ async function loadUpgradePlans() {{
   }}
 }}
 function renderUpgradePlans(plans) {{
-  const currentPlan = {json.dumps(plan)};
+  const currentPlan    = {json.dumps(plan)};
+  const currentBilling = {json.dumps(billing)};
+  const licStatus      = {json.dumps(lic_status)};
+  const isPaid         = (licStatus === 'active');   // trial / pending_payment / expired are NOT paid → must allow payment
   const grid = document.getElementById('up-plans-grid');
   const cards = plans.map(p => {{
     const price = p.prices && p.prices[__upBilling];
-    const isCurrent = (p.slug === currentPlan);
-    const cls = 'up-plan-card' + (isCurrent ? ' up-current' : '') + (p.highlight ? ' up-highlight' : '');
+    const isSamePlan = (p.slug === currentPlan);
+    // Only the EXACT current PAID plan+period is a terminal "current" state.
+    // On trial/pending/expired you can still pay to activate, and even when
+    // active you can switch billing period on the same tier (e.g. monthly→yearly).
+    const isExactCurrent = isPaid && isSamePlan && (__upBilling === currentBilling);
+    const cls = 'up-plan-card' + (isExactCurrent ? ' up-current' : '') + (p.highlight ? ' up-highlight' : '');
     const priceHtml = price
       ? '<div style="margin:6px 0 4px"><span style="font-size:1.3rem;font-weight:700">₹' + price.amount_inr.toLocaleString('en-IN') + '</span><span style="font-size:.8rem;color:#94a3b8"> / ' + __upBilling + '</span></div>'
       : '<div style="color:#94a3b8;font-size:.85rem;margin:6px 0">Price unavailable for this billing period</div>';
-    const btn = isCurrent
+    let label = 'Pick this plan';
+    if (isSamePlan && !isPaid)      label = 'Activate this plan';                       // trial/expired → pay to start
+    else if (isSamePlan && isPaid)  label = 'Switch to ' + __upBilling + ' billing';    // same tier, change period
+    const btn = isExactCurrent
       ? '<div style="margin-top:10px;color:#22c55e;font-size:.82rem;font-weight:600">✓ Your current plan</div>'
-      : (price && price.razorpay_plan_id
-          ? '<button onclick="subscribeTo(\\''+p.slug+'\\')" style="margin-top:10px;width:100%;padding:9px;border:none;border-radius:7px;background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff;font-weight:600;cursor:pointer">Pick this plan</button>'
-          : '<div style="margin-top:10px;color:#64748b;font-size:.78rem">Not available for ' + __upBilling + ' billing</div>');
+      : (price
+          ? '<button onclick="subscribeTo(\\''+p.slug+'\\')" style="margin-top:10px;width:100%;padding:9px;border:none;border-radius:7px;background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff;font-weight:600;cursor:pointer">' + label + '</button>'
+          : '<div style="margin-top:10px;color:#64748b;font-size:.78rem">Price unavailable for ' + __upBilling + ' billing</div>');
     const feats = (p.features || []).slice(0, 5).map(f => '<li style="font-size:.78rem;color:#94a3b8;margin:2px 0">• ' + f + '</li>').join('');
     return '<div class="'+cls+'"><div style="font-size:1.05rem;font-weight:700">'+p.name+'</div>'+priceHtml+'<ul style="margin:8px 0 0;padding:0;list-style:none">'+feats+'</ul>'+btn+'</div>';
   }});
