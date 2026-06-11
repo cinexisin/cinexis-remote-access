@@ -198,7 +198,9 @@ send_heartbeat() {
 # ── Wait for approval ──────────────────────────────────────────────────────────
 wait_for_approval() {
     log "⏳ Pending approval by Cinexis admin..."
-    log "   Node ID:   ${NODE_ID}"
+    # Only show a short prefix — the full node_id is an installation identifier
+    # and addon logs are often pasted into support chats / public forums.
+    log "   Node ID:   ${NODE_ID:0:8}… (full id is in your Cinexis dashboard)"
     log "   HA Name:   ${HA_NAME}"
     log "   Subdomain: ${SUBDOMAIN}.ha1.cinexis.cloud"
     local attempt=0
