@@ -1,3 +1,33 @@
+## [1.19.0] - 2026-06-11
+
+### Added — 🎨 Notification Designer (no-YAML visual builder)
+
+The headline feature: build WhatsApp/Telegram notifications visually, with a
+LIVE preview, and the addon writes the Home Assistant automation for you. No
+more hand-editing automations.yaml.
+
+- **Visual builder** in the addon dashboard: ① pick a trigger (any HA
+  sensor/lock/person/cover/alarm device + target state), ② tick recipients
+  from your book, ③ compose the message with insertable value-chips (time,
+  date, device state, device name), ④ optionally attach a live camera
+  snapshot.
+- **Live preview** — "Send preview to me" renders your message through HA's
+  template engine (so {{ now() }} etc. become real values) and sends it, with
+  the actual camera frame, to a chosen recipient. You see the EXACT WhatsApp
+  message before saving.
+- **Save & activate** writes the HA automation via the core config API
+  (classic schema — works on all HA versions). If HA won't allow the
+  programmatic write, it falls back to handing you the ready YAML to paste.
+- Lists your designer-created notifications with one-click delete; seeds the
+  per-automation recipient map so /notify routes correctly.
+- Gated by the ha_integration entitlement; one-time rest_command setup is
+  detected and guided.
+
+New ingress endpoints: GET /designer/entities, /designer/check,
+/designer/list; POST /designer/preview, /designer/save, /designer/delete.
+New HA core API helper (ha_api_call) for reading entities, rendering
+templates, and writing automations.
+
 ## [1.18.0] - 2026-06-10
 
 ### Security — per-node FRP tunnel token (replaces the shared secret)

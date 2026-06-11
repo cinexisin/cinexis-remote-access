@@ -448,6 +448,256 @@ def save_automation_map(m):
     with open(AUTOMATION_MAP_FILE, "w") as f:
         json.dump(m, f, indent=2)
 
+# ── Home Assistant core API helper ────────────────────────────────────────────
+def ha_api_call(method, path, payload=None, timeout=12):
+    """Call HA's core REST API via the Supervisor proxy. Returns
+    (ok, parsed_or_text). Used by the Notification Designer to read the entity
+    list, render message templates, and write automations."""
+    token = get_supervisor_token()
+    if not token:
+        return False, {"error": "no_supervisor_token"}
+    url = "http://supervisor/core/api" + path
+    headers = {"Authorization": "Bearer " + token, "Content-Type": "application/json"}
+    data = json.dumps(payload).encode() if payload is not None else None
+    req = urllib.request.Request(url, data=data, method=method, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            raw = r.read().decode()
+            try:    return True, json.loads(raw)
+            except Exception: return True, raw
+    except urllib.error.HTTPError as e:
+        body = ""
+        try: body = e.read().decode()
+        except Exception: pass
+        return False, {"error": f"http_{e.code}", "body": body[:300]}
+    except Exception as e:
+        return False, {"error": str(e)}
+
+DESIGNER_FILE = f"{STORAGE_DIR}/designer_automations.json"
+
+def load_designer_automations():
+    """Automations created by the Notification Designer — list of
+    { id, name, entity, to_state, recipients[], message, image_entity }."""
+    try:
+        with open(DESIGNER_FILE) as f:
+            data = json.load(f)
+        return data if isinstance(data, list) else []
+    except (FileNotFoundError, json.JSONDecodeError):
+        return []
+
+def save_designer_automations(items):
+    os.makedirs(STORAGE_DIR, exist_ok=True)
+    with open(DESIGNER_FILE, "w") as f:
+        json.dump(items, f, indent=2)
+
+def render_designer_section(base_path="/"):
+    """Notification Designer — a no-YAML visual builder. Pick a trigger, pick
+    recipients, compose the message, attach a camera, see a LIVE WhatsApp
+    preview (real values + real snapshot), and save → writes the HA automation
+    under the hood. The 10x feature."""
+    recipients = [r for r in load_recipients() if r.get("enabled", True)]
+    rec_json = json.dumps([{"name": r.get("name",""), "channel": r.get("channel","whatsapp")} for r in recipients])
+    has_recipients = len(recipients) > 0
+
+    tmpl = """
+<div class="card" id="designer-card">
+  <div class="card-header"><span class="card-icon">🎨</span>Notification Designer <span style="font-size:.66rem;background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff;padding:2px 8px;border-radius:6px;margin-left:8px;vertical-align:middle">no YAML</span></div>
+  <p class="muted small">Build a notification visually — pick when it fires, who it goes to, what it says, and see the real WhatsApp message <strong>before</strong> you save. We write the Home Assistant automation for you.</p>
+
+  __NORECIP__
+
+  <div id="dz-builder" style="__BUILDERHIDE__">
+    <!-- ① Trigger -->
+    <div class="dz-step">
+      <div class="dz-step-label">① When this happens</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <select id="dz-entity" class="dz-input" style="flex:2 1 240px"><option value="">⏳ loading devices…</option></select>
+        <span class="muted small">becomes</span>
+        <select id="dz-state" class="dz-input" style="flex:1 1 120px"><option value="">—</option></select>
+      </div>
+    </div>
+
+    <!-- ② Recipients -->
+    <div class="dz-step">
+      <div class="dz-step-label">② Notify these people</div>
+      <div id="dz-recipients" style="display:flex;gap:8px;flex-wrap:wrap"></div>
+    </div>
+
+    <!-- ③ Message -->
+    <div class="dz-step">
+      <div class="dz-step-label">③ Message</div>
+      <textarea id="dz-message" class="dz-input" rows="2" style="width:100%;resize:vertical" placeholder="🚨 Front door opened at {{ now().strftime('%I:%M %p') }}"></textarea>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">
+        <button type="button" class="dz-chip" data-token="{{ now().strftime('%I:%M %p') }}">🕐 Time</button>
+        <button type="button" class="dz-chip" data-token="{{ now().strftime('%d %b') }}">📅 Date</button>
+        <button type="button" class="dz-chip" data-token="{{ states('ENTITY') }}">📊 Its state</button>
+        <button type="button" class="dz-chip" data-token="{{ state_attr('ENTITY','friendly_name') }}">🏠 Device name</button>
+      </div>
+    </div>
+
+    <!-- ④ Camera -->
+    <div class="dz-step">
+      <div class="dz-step-label">④ Attach a camera snapshot <span class="muted small">(optional)</span></div>
+      <select id="dz-camera" class="dz-input" style="max-width:320px"><option value="">— no snapshot —</option></select>
+    </div>
+
+    <!-- Live preview -->
+    <div class="dz-step" style="background:var(--bg);border:1px dashed #2a2f3c;border-radius:10px;padding:12px 14px">
+      <div class="dz-step-label">🔍 Live preview — see the real message on WhatsApp</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <span class="muted small">send a preview to</span>
+        <select id="dz-preview-to" class="dz-input" style="flex:1 1 150px"></select>
+        <button type="button" class="btn btn-ghost btn-sm" id="dz-preview-btn" onclick="dzPreview()">📤 Send preview</button>
+      </div>
+      <div id="dz-preview-result" class="muted small" style="margin-top:8px"></div>
+    </div>
+
+    <div style="display:flex;gap:10px;align-items:center;margin-top:6px;flex-wrap:wrap">
+      <input id="dz-name" class="dz-input" placeholder="Name this notification (e.g. Front door at night)" style="flex:1 1 240px">
+      <button type="button" class="btn btn-primary" onclick="dzSave()">💾 Save &amp; activate</button>
+    </div>
+    <div id="dz-save-result" style="margin-top:8px;font-size:.85rem"></div>
+    <div id="dz-rc-warn" class="muted small" style="margin-top:6px;display:none;color:#fbbf24"></div>
+  </div>
+
+  <!-- Existing -->
+  <div id="dz-existing" style="margin-top:16px"></div>
+</div>
+
+<style>
+  .dz-step{margin:14px 0}
+  .dz-step-label{font-size:.8rem;font-weight:700;color:var(--text2);margin-bottom:7px}
+  .dz-input{background:var(--bg);border:1px solid #2a2f3c;border-radius:8px;color:var(--text);padding:9px 11px;font-size:.86rem;font-family:inherit;outline:none}
+  .dz-input:focus{border-color:#6366f1}
+  .dz-chip{background:var(--surface2,#162032);border:1px solid #2a2f3c;border-radius:7px;color:var(--text2);font-size:.76rem;padding:5px 10px;cursor:pointer}
+  .dz-chip:hover{border-color:#6366f1;color:var(--text)}
+  .dz-rec{display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border-radius:8px;border:1px solid #2a2f3c;cursor:pointer;font-size:.83rem;user-select:none}
+  .dz-rec.on{background:rgba(99,102,241,.14);border-color:#6366f1;color:#c7d2fe}
+  .dz-auto{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 12px;background:var(--bg);border:1px solid #1e2d45;border-radius:9px;margin-bottom:8px}
+</style>
+
+<script>
+const DZ_BASE = '__BASE__';
+const DZ_RECIPIENTS = __RECIPIENTS__;
+let DZ_ENT = {};   // entity_id -> {target_states, friendly}
+
+function dzEsc(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+
+async function dzInit(){
+  // Recipients (checkboxes + preview dropdown)
+  const recWrap = document.getElementById('dz-recipients');
+  const prevSel = document.getElementById('dz-preview-to');
+  recWrap.innerHTML = DZ_RECIPIENTS.map(r =>
+    '<label class="dz-rec"><input type="checkbox" class="dz-rcheck" value="'+dzEsc(r.name)+'" style="display:none" onchange="this.closest(\\'label\\').classList.toggle(\\'on\\',this.checked)">'+
+    (r.channel==='telegram'?'💬':'📱')+' '+dzEsc(r.name)+'</label>').join('');
+  prevSel.innerHTML = DZ_RECIPIENTS.map(r=>'<option value="'+dzEsc(r.name)+'">'+dzEsc(r.name)+'</option>').join('');
+
+  // Entities + cameras
+  try{
+    const d = await fetch(DZ_BASE+'designer/entities').then(r=>r.json());
+    if(d.ok){
+      const sel=document.getElementById('dz-entity'); sel.innerHTML='<option value="">— pick a device —</option>';
+      const DOMNAMES={binary_sensor:'Sensors',person:'People',device_tracker:'Devices',lock:'Locks',cover:'Covers/Blinds',switch:'Switches',input_boolean:'Toggles',alarm_control_panel:'Alarm',sun:'Sun',climate:'Climate'};
+      Object.keys(d.groups||{}).sort().forEach(dom=>{
+        const og=document.createElement('optgroup'); og.label=DOMNAMES[dom]||dom;
+        d.groups[dom].forEach(e=>{ DZ_ENT[e.entity_id]=e;
+          const o=document.createElement('option'); o.value=e.entity_id; o.textContent=e.friendly_name+'  ('+e.state+')'; og.appendChild(o); });
+        sel.appendChild(og);
+      });
+      const cam=document.getElementById('dz-camera');
+      (d.cameras||[]).forEach(c=>{const o=document.createElement('option');o.value=c.entity_id;o.textContent=c.friendly_name;cam.appendChild(o);});
+    } else {
+      document.getElementById('dz-entity').innerHTML='<option value="">⚠ Can\\'t reach Home Assistant</option>';
+    }
+  }catch(e){ document.getElementById('dz-entity').innerHTML='<option value="">⚠ error loading devices</option>'; }
+
+  // rest_command readiness
+  try{ const c=await fetch(DZ_BASE+'designer/check').then(r=>r.json());
+    if(c.ok && !c.rest_command_ready){ const w=document.getElementById('dz-rc-warn'); w.style.display='block';
+      w.innerHTML='⚠ One-time setup needed: paste the <strong>rest_command.cinexis_notify</strong> snippet from the “Use from Home Assistant” card below into your configuration.yaml &amp; restart HA. Until then, saving will give you the automation YAML to paste manually.'; }
+  }catch(e){}
+
+  dzLoadExisting();
+}
+
+document.getElementById('dz-entity')?.addEventListener('change',function(){
+  const e=DZ_ENT[this.value]; const st=document.getElementById('dz-state');
+  st.innerHTML = e ? e.target_states.map(s=>'<option value="'+s+'">'+s+'</option>').join('') : '<option value="">—</option>';
+});
+document.querySelectorAll('.dz-chip').forEach(b=>b.addEventListener('click',function(){
+  const ent=document.getElementById('dz-entity').value||'YOUR_DEVICE';
+  const ta=document.getElementById('dz-message');
+  ta.value += (ta.value && !ta.value.endsWith(' ')?' ':'') + this.dataset.token.replace(/ENTITY/g,ent);
+  ta.focus();
+}));
+
+function dzSelectedRecipients(){return [...document.querySelectorAll('.dz-rcheck:checked')].map(c=>c.value);}
+
+async function dzPreview(){
+  const out=document.getElementById('dz-preview-result'); const btn=document.getElementById('dz-preview-btn');
+  const msg=document.getElementById('dz-message').value.trim();
+  const to=document.getElementById('dz-preview-to').value;
+  const cam=document.getElementById('dz-camera').value;
+  if(!msg){out.style.color='#ef4444';out.textContent='Write a message first.';return;}
+  btn.disabled=true; out.style.color='var(--text3)'; out.textContent='Sending preview…';
+  try{
+    const r=await fetch(DZ_BASE+'designer/preview',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({message:msg,to:to,image_entity:cam})}).then(r=>r.json());
+    if(r.ok){out.style.color='#22c55e';out.innerHTML='✅ Preview sent to '+dzEsc(to)+' — check WhatsApp.'+(r.rendered?'<br><span style="color:#94a3b8">Rendered: “'+dzEsc(r.rendered)+'”</span>':'');}
+    else{out.style.color='#ef4444';out.textContent='❌ '+(r.error||'failed (is WhatsApp paired?)');}
+  }catch(e){out.style.color='#ef4444';out.textContent='❌ '+e.message;}
+  btn.disabled=false;
+}
+
+async function dzSave(){
+  const out=document.getElementById('dz-save-result');
+  const name=document.getElementById('dz-name').value.trim();
+  const entity=document.getElementById('dz-entity').value;
+  const to_state=document.getElementById('dz-state').value;
+  const recipients=dzSelectedRecipients();
+  const message=document.getElementById('dz-message').value.trim();
+  const image_entity=document.getElementById('dz-camera').value;
+  if(!name||!entity||!to_state||!recipients.length||!message){
+    out.style.color='#ef4444';out.textContent='❌ Fill in: a name, the trigger device + state, at least one recipient, and a message.';return;}
+  out.style.color='var(--text3)';out.textContent='Saving…';
+  try{
+    const r=await fetch(DZ_BASE+'designer/save',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({name,entity,to_state,recipients,message,image_entity})}).then(r=>r.json());
+    if(r.ok && r.ha_written){out.style.color='#22c55e';out.textContent='✅ Saved & active! It will fire automatically from now on.';dzLoadExisting();document.getElementById('dz-name').value='';}
+    else if(r.ok && r.fallback_yaml){out.style.color='#fbbf24';
+      out.innerHTML='⚠ Saved, but HA wouldn\\'t let us write the automation automatically. Paste this into your automations and reload:<pre style="background:var(--bg);padding:10px;border-radius:8px;margin-top:8px;font-size:.74rem;overflow-x:auto;white-space:pre-wrap">'+dzEsc(r.fallback_yaml)+'</pre>';dzLoadExisting();}
+    else{out.style.color='#ef4444';out.textContent='❌ '+(r.error||'failed');}
+  }catch(e){out.style.color='#ef4444';out.textContent='❌ '+e.message;}
+}
+
+async function dzLoadExisting(){
+  try{
+    const d=await fetch(DZ_BASE+'designer/list').then(r=>r.json());
+    const wrap=document.getElementById('dz-existing');
+    if(!d.automations||!d.automations.length){wrap.innerHTML='';return;}
+    wrap.innerHTML='<div class="dz-step-label" style="margin-top:4px">Your notifications ('+d.automations.length+')</div>'+
+      d.automations.map(a=>'<div class="dz-auto"><div><strong>'+dzEsc(a.name)+'</strong>'+
+        (a.ha_written?'':' <span style="color:#fbbf24;font-size:.7rem">(manual)</span>')+
+        '<div class="muted small">'+dzEsc(a.entity)+' → '+dzEsc(a.to_state)+' · to '+dzEsc((a.recipients||[]).join(', '))+(a.image_entity?' · 📷':'')+'</div></div>'+
+        '<button class="btn btn-danger btn-sm" onclick="dzDelete(\\''+dzEsc(a.id)+'\\')">🗑</button></div>').join('');
+  }catch(e){}
+}
+async function dzDelete(id){
+  if(!confirm('Delete this notification?'))return;
+  await fetch(DZ_BASE+'designer/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id})});
+  dzLoadExisting();
+}
+dzInit();
+</script>
+"""
+    norecip = ('<div class="wa-status-row waiting" style="margin:10px 0"><div class="dot"></div>'
+               '<div>Add people in the <strong>Notification Recipients</strong> card first, then design notifications for them here.</div></div>') if not has_recipients else ''
+    return (tmpl
+            .replace("__BASE__", base_path)
+            .replace("__RECIPIENTS__", rec_json)
+            .replace("__NORECIP__", norecip)
+            .replace("__BUILDERHIDE__", "" if has_recipients else "opacity:.45;pointer-events:none"))
+
 def render_recipients_section(base_path="/"):
     """Recipients book — customer manages WA + Telegram contacts here,
     then HA automations reference them by name (no phone numbers in
@@ -1713,6 +1963,10 @@ class IngressHandler(http.server.BaseHTTPRequestHandler):
                     else render_locked_card("📱 WhatsApp", "WhatsApp send + receive")
             tg    = render_telegram_section(base_path=base) if entitlements.get("telegram", True) \
                     else render_locked_card("💬 Telegram", "Telegram bot pairing")
+            # Notification Designer — the no-YAML visual builder. Gated by the
+            # same ha_integration entitlement (it writes HA automations).
+            designer = render_designer_section(base_path=base) if entitlements.get("ha_integration", True) \
+                    else render_locked_card("🎨 Notification Designer", "Visual no-YAML notification builder")
             ha    = render_ha_integration_section(base_path=base) if entitlements.get("ha_integration", True) \
                     else render_locked_card("🏠 Home Assistant automations", "REST commands & notify services")
             daily = render_daily_section(base_path=base)   # always available
@@ -1722,12 +1976,12 @@ class IngressHandler(http.server.BaseHTTPRequestHandler):
             voice = render_voice_section() if voice_any \
                     else render_locked_card("🎙️ Voice control (Alexa / Google / Siri)", "Voice control on Pro plan and up")
 
-            # Order: Subscription, License, WhatsApp QR, Telegram, Recipients
-            # (so the customer pairs WA/TG first then defines names), HA
-            # integration (shows snippet that references recipient names),
-            # Daily Summary, Rules, Voice at the bottom.
+            # Order: Subscription, License, WhatsApp QR, Telegram, Recipients,
+            # then the Notification Designer (the star — build alerts visually),
+            # the HA integration snippet (advanced / fallback), Daily, Rules,
+            # Voice at the bottom.
             self.send_html(200, page("Cinexis Setup",
-                sub + lic + wa + tg + recs + ha + daily + rules + voice,
+                sub + lic + wa + tg + recs + designer + ha + daily + rules + voice,
                 base_path=base))
         elif path == "/ha/entities":
             # Fetch the HA entity list so the rule editor can autocomplete.
@@ -1742,6 +1996,51 @@ class IngressHandler(http.server.BaseHTTPRequestHandler):
                 self.send_json(200, {"entities": ents})
             except Exception as e:
                 self.send_json(200, {"entities": [], "error": str(e)})
+        elif path == "/designer/entities":
+            # Triggerable entities grouped by domain (the useful ones for
+            # notifications) + a separate camera list for snapshots. Each entity
+            # carries its current state + suggested target states.
+            ok, states = ha_api_call("GET", "/states", timeout=10)
+            if not ok or not isinstance(states, list):
+                self.send_json(200, {"ok": False, "error": (states or {}).get("error", "ha_unreachable")})
+                return
+            # Domains worth triggering on, with their common target states.
+            TRIGGER_DOMAINS = {
+                "binary_sensor": ["on", "off"], "person": ["home", "not_home"],
+                "device_tracker": ["home", "not_home"], "lock": ["locked", "unlocked"],
+                "cover": ["open", "closed"], "door": ["open", "closed"],
+                "switch": ["on", "off"], "input_boolean": ["on", "off"],
+                "alarm_control_panel": ["armed_away", "armed_home", "disarmed", "triggered"],
+                "sun": ["above_horizon", "below_horizon"], "climate": ["heat", "cool", "off"],
+            }
+            groups = {}
+            cameras = []
+            for s in states:
+                eid = s.get("entity_id", "")
+                dom = eid.split(".")[0] if "." in eid else ""
+                fn = (s.get("attributes") or {}).get("friendly_name", "") or eid
+                cur = s.get("state", "")
+                if dom == "camera":
+                    cameras.append({"entity_id": eid, "friendly_name": fn})
+                    continue
+                if dom in TRIGGER_DOMAINS:
+                    groups.setdefault(dom, []).append({
+                        "entity_id": eid, "friendly_name": fn, "state": cur,
+                        "target_states": TRIGGER_DOMAINS[dom],
+                    })
+            self.send_json(200, {"ok": True, "groups": groups, "cameras": cameras})
+        elif path == "/designer/check":
+            # Is rest_command.cinexis_notify wired up in HA yet? The designer's
+            # saved automations call it, so we guide the one-time setup if not.
+            ok, services = ha_api_call("GET", "/services", timeout=8)
+            has_rc = False
+            if ok and isinstance(services, list):
+                for grp in services:
+                    if grp.get("domain") == "rest_command" and "cinexis_notify" in (grp.get("services") or {}):
+                        has_rc = True; break
+            self.send_json(200, {"ok": True, "rest_command_ready": has_rc})
+        elif path == "/designer/list":
+            self.send_json(200, {"ok": True, "automations": load_designer_automations()})
         elif path == "/wa/status":
             self.send_json(200, wa_service_call("GET", "/status"))
         elif path == "/wa/qr":
@@ -2115,6 +2414,110 @@ class IngressHandler(http.server.BaseHTTPRequestHandler):
                 _STATUS_CACHE["data"] = None
                 result = cinexis_addon_call("POST", "/subscribe/cancel", {})
                 self.send_json(200, result)
+            except Exception as e:
+                self.send_json(500, {"ok": False, "error": str(e)})
+
+        elif path == "/designer/preview":
+            # The killer feature: render the composed message through HA's
+            # template engine (so {{ now() }} etc. become real values), then
+            # send it — with the live camera snapshot — to ONE chosen recipient
+            # so the customer sees the EXACT WhatsApp message before saving.
+            try:
+                body = json.loads(self.read_body() or "{}")
+                message  = (body.get("message") or "").strip()
+                to_name  = (body.get("to") or "").strip()
+                image_entity = (body.get("image_entity") or "").strip() or None
+                if not to_name:
+                    self.send_json(400, {"ok": False, "error": "pick a recipient to preview to"})
+                    return
+                # Render templates via HA (best-effort — falls back to raw text).
+                rendered = message
+                if "{{" in message:
+                    ok, out = ha_api_call("POST", "/template", {"template": message}, timeout=8)
+                    if ok and isinstance(out, str):
+                        rendered = out
+                payload = {"to": to_name, "message": "🔔 PREVIEW — " + (rendered or "(no message)")}
+                if image_entity:
+                    payload["image_entity"] = image_entity
+                result = wa_service_call("POST", "/notify", payload)
+                self.send_json(200, {"ok": bool(result.get("ok")), "rendered": rendered,
+                                     "sent": result.get("sent"), "failed": result.get("failed"),
+                                     "error": result.get("error")})
+            except Exception as e:
+                self.send_json(500, {"ok": False, "error": str(e)})
+
+        elif path == "/designer/save":
+            # Build + persist a notification: write the HA automation via the
+            # core API, store our own copy for the editor, and seed the
+            # per-automation recipient map. Falls back to returning the YAML
+            # for manual paste if the HA API write isn't permitted.
+            try:
+                import uuid, re as _re
+                body = json.loads(self.read_body() or "{}")
+                name     = (body.get("name") or "").strip()[:80]
+                entity   = (body.get("entity") or "").strip()
+                to_state = (body.get("to_state") or "").strip()
+                recipients = body.get("recipients") or []
+                message  = (body.get("message") or "").strip()
+                image_entity = (body.get("image_entity") or "").strip() or None
+                if not name or not entity or not to_state or not recipients or not message:
+                    self.send_json(400, {"ok": False, "error": "name, trigger, recipients and message are all required"})
+                    return
+                slug = "cinexis_" + _re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")[:40]
+                auto_eid = "automation." + slug
+                data = {"to": recipients, "message": message, "automation_id": auto_eid}
+                if image_entity:
+                    data["image_entity"] = image_entity
+                # Classic automation schema (trigger/condition/action +
+                # platform/service) — accepted by ALL Home Assistant versions,
+                # unlike the newer triggers/actions keys.
+                automation = {
+                    "alias": "Cinexis · " + name,
+                    "description": "Created with the Cinexis Notification Designer",
+                    "mode": "single",
+                    "trigger": [{"platform": "state", "entity_id": entity, "to": to_state}],
+                    "condition": [],
+                    "action": [{"service": "rest_command.cinexis_notify", "data": data}],
+                }
+                # Write to HA via the config automation API.
+                ok, out = ha_api_call("POST", f"/config/automation/config/{slug}", automation)
+                # Persist our own record either way.
+                items = [a for a in load_designer_automations() if a.get("id") != slug]
+                items.append({"id": slug, "entity_id": auto_eid, "name": name, "entity": entity,
+                              "to_state": to_state, "recipients": recipients, "message": message,
+                              "image_entity": image_entity, "ha_written": bool(ok)})
+                save_designer_automations(items)
+                # Seed per-automation recipient defaults.
+                amap = load_automation_map(); amap[auto_eid] = recipients; save_automation_map(amap)
+                if ok:
+                    self.send_json(200, {"ok": True, "automation_id": auto_eid, "ha_written": True})
+                else:
+                    # Fall back: hand the customer the YAML to paste.
+                    yaml_txt = (
+                        f"- alias: \"Cinexis · {name}\"\n"
+                        f"  trigger:\n    - platform: state\n      entity_id: {entity}\n      to: \"{to_state}\"\n"
+                        f"  action:\n    - service: rest_command.cinexis_notify\n      data:\n"
+                        f"        to: {json.dumps(recipients)}\n        message: \"{message}\"\n"
+                        + (f"        image_entity: {image_entity}\n" if image_entity else "")
+                    )
+                    self.send_json(200, {"ok": True, "ha_written": False,
+                                         "fallback_yaml": yaml_txt,
+                                         "reason": (out or {}).get("error", "ha_write_failed")})
+            except Exception as e:
+                self.send_json(500, {"ok": False, "error": str(e)})
+
+        elif path == "/designer/delete":
+            try:
+                body = json.loads(self.read_body() or "{}")
+                aid = (body.get("id") or "").strip()
+                items = load_designer_automations()
+                target = next((a for a in items if a.get("id") == aid), None)
+                if target:
+                    # Remove from HA too (best-effort).
+                    ha_api_call("DELETE", f"/config/automation/config/{aid}")
+                    items = [a for a in items if a.get("id") != aid]
+                    save_designer_automations(items)
+                self.send_json(200, {"ok": True})
             except Exception as e:
                 self.send_json(500, {"ok": False, "error": str(e)})
 
