@@ -444,15 +444,26 @@ service_watchdog() {
             fi
         fi
 
-        # WhatsApp Web service (only if installed)
+        # WhatsApp Web service (only if installed). Never give up permanently —
+        # after 5 fast respawns, back off to one retry per ~5 min (every 15th
+        # 20s tick) so a transient cause (corrupt auth, brief resource crunch)
+        # still recovers on its own instead of leaving WhatsApp dead forever.
         if [ -f /usr/lib/cinexis-wa/cinexis-wa.js ]; then
             if [ -n "${WA_PID}" ] && ! kill -0 "${WA_PID}" 2>/dev/null; then
                 CRASHES[wa]=$(( ${CRASHES[wa]:-0} + 1 ))
                 if [ "${CRASHES[wa]}" -le 5 ]; then
                     warn "WhatsApp service died — respawning (#${CRASHES[wa]})"
                     start_wa
-                elif [ "${CRASHES[wa]}" -eq 6 ]; then
-                    err "WhatsApp service crashed 5×, giving up. Check the addon Log tab."
+                else
+                    WA_BACKOFF=$(( ${WA_BACKOFF:-0} + 1 ))
+                    if [ "${CRASHES[wa]}" -eq 6 ]; then
+                        warn "WhatsApp service crashed 5× — slowing retries to every ~5 min. Check the addon Log tab for the cause."
+                    fi
+                    if [ "${WA_BACKOFF}" -ge 15 ]; then
+                        WA_BACKOFF=0
+                        warn "WhatsApp service slow-retry — respawning"
+                        start_wa
+                    fi
                 fi
             fi
         fi
@@ -486,7 +497,7 @@ trap cleanup EXIT INT TERM
 # ── Main ───────────────────────────────────────────────────────────────────────
 main() {
     log "=========================================="
-    log " Cinexis Remote Access v1.19.0"
+    log " Cinexis Remote Access v1.19.1"
     log " + Alexa Smart Home Integration"
     log " + Ingress Management UI"
     log "=========================================="

@@ -1,3 +1,26 @@
+## [1.19.1] - 2026-06-11
+
+### Changed — cleaner dashboard for non-technical users
+
+- The "Use from Home Assistant automations" YAML card (rest_command /
+  notify wrapper, payload template, secret) is now collapsed into an
+  "⚙️ Advanced — raw configuration.yaml" expandable, clearly pointing
+  users to the 🎨 Notification Designer instead. A normal user no longer
+  sees a wall of YAML.
+
+### Fixed — WhatsApp service self-recovery
+
+- The most common cause of "WhatsApp service not running" is a corrupt
+  auth state in /share/cinexis/wa-auth (which survives addon updates, so
+  reinstalling doesn't clear it). The service now wipes that state after
+  3 consecutive boot failures and starts fresh (showing a new QR) instead
+  of crash-looping.
+- The watchdog no longer gives up permanently after 5 crashes — it backs
+  off to a retry every ~5 min, so a transient failure recovers on its own.
+- The "service not running" card now explains it's starting/recovering
+  (auto-retries), notes Telegram + the Designer still work meanwhile, and
+  points to the Log / /diag for diagnosis if it persists.
+
 ## [1.19.0] - 2026-06-11
 
 ### Added — 🎨 Notification Designer (no-YAML visual builder)

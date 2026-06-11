@@ -1202,8 +1202,15 @@ def render_ha_integration_section(base_path="/"):
         _secret = ""
     secret_line = f"      'secret':        '{_secret}',\n" if _secret else ""
     return f"""
-<div class="card" id="ha-int-card">
-  <div class="card-header"><span class="card-icon">🏠</span>Use from Home Assistant automations</div>
+<details class="card" id="ha-int-card">
+  <summary style="cursor:pointer;padding:16px 18px;font-weight:700;font-size:.95rem;list-style:none">
+    ⚙️ Advanced — raw configuration.yaml (for power users)
+    <div style="font-weight:400;font-size:.78rem;color:var(--text3);margin-top:4px">
+      You don't need this. Build notifications with the 🎨 <strong>Notification Designer</strong> above —
+      no YAML. This is only here if you want to call the addon directly from your own automations.
+    </div>
+  </summary>
+  <div style="padding:0 18px 18px">
   <p class="muted small">
     One <code>rest_command.cinexis_notify</code> + a <code>notify.cinexis_addon</code> wrapper. HA automations
     pass <strong>recipient names</strong> (defined in the Recipients card above) — never phone numbers in YAML.
@@ -1306,7 +1313,8 @@ notify:
     recipient list saved for that automation_id (in /share/cinexis/automation_recipient_map.json).
     HA's <code>{{{{ trigger.id }}}}</code> or <code>automation.&lt;name&gt;</code> works.
   </p>
-</div>
+  </div>
+</details>
 <script>
 function copyHa(id) {{
   const text = document.getElementById(id).innerText;
@@ -1611,7 +1619,12 @@ async function waRefreshStatus(){{
   try {{
     const s = await fetch(WA_BASE + 'wa/status').then(r => r.json());
     if (s.error && s.error.startsWith('wa_service_unreachable')) {{
-      body.innerHTML = '<div class="wa-status-row error"><div class="dot"></div><div>WhatsApp service not running. Check the addon log.</div></div>';
+      body.innerHTML = '<div class="wa-status-row error"><div class="dot"></div><div>'+
+        '<div style="font-weight:700">WhatsApp service is starting / recovering…</div>'+
+        '<div class="muted small" style="margin-top:4px">This can take up to a minute after an addon update or restart — it retries automatically. '+
+        'Telegram and the Notification Designer work meanwhile. If it stays here for several minutes, open the addon\\'s <strong>Log</strong> tab '+
+        '(or append <code>/diag</code> to this URL) and share the WhatsApp lines so we can pinpoint it, then restart the addon.</div>'+
+        '</div></div>';
       return;
     }}
     if (s.connected) {{

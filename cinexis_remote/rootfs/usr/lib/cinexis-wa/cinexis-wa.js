@@ -471,6 +471,15 @@ function bootWA() {
   start().catch(err => {
     bootAttempts++;
     lastError = err && err.message ? err.message : String(err);
+    // Corrupt-auth recovery: if start() keeps failing, the most common cause
+    // is a half-written / corrupt auth state in /share/cinexis/wa-auth (which
+    // survives addon updates, so a reinstall doesn't clear it). After 3
+    // consecutive failures, wipe it so the next boot starts fresh and shows a
+    // new QR instead of crash-looping forever.
+    if (bootAttempts === 3) {
+      try { fs.rmSync(AUTH_DIR, { recursive: true, force: true }); console.warn('[CINEXIS-WA] 3 boot failures — wiped possibly-corrupt auth state to recover; a fresh QR will appear.'); }
+      catch (_) {}
+    }
     const backoff = Math.min(60000, 2000 * 2 ** Math.min(bootAttempts, 5));
     console.error(`[CINEXIS-WA] startup error (attempt ${bootAttempts}): ${lastError} — retrying in ${backoff/1000}s`);
     setTimeout(bootWA, backoff);
