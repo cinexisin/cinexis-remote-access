@@ -14,6 +14,7 @@ FRPC_CONFIG="${STORAGE_DIR}/frpc.toml"
 FRP_TOKEN_FILE="${STORAGE_DIR}/frp_token"   # per-node tunnel token from cloud
 HEARTBEAT_INTERVAL=300
 LOG_PREFIX="[Cinexis]"
+export CINEXIS_VERSION="1.19.7"   # single source: startup banner + addon_version reported to cloud
 NAME_PREFIX="${NAME_PREFIX:-}"
 LICENSE_KEY_FILE="${STORAGE_DIR}/license_key"
 LICENSE_KEY=""
@@ -499,7 +500,7 @@ trap cleanup EXIT INT TERM
 # ── Main ───────────────────────────────────────────────────────────────────────
 main() {
     log "=========================================="
-    log " Cinexis Remote Access v1.19.6"
+    log " Cinexis Remote Access v${CINEXIS_VERSION}"
     log " + Alexa Smart Home Integration"
     log " + Ingress Management UI"
     log "=========================================="

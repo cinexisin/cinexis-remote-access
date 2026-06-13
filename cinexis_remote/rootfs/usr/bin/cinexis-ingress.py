@@ -137,6 +137,10 @@ def _read_cached_license_key():
     except (FileNotFoundError, OSError):
         return None
 
+# Addon version, set by the entrypoint (CINEXIS_VERSION env). Reported to the
+# cloud on every /status call so the admin can see each node's running version.
+ADDON_VERSION = os.environ.get("CINEXIS_VERSION", "")
+
 def cinexis_addon_call(method, path, payload=None):
     """Call /api/addon/* with node credentials auto-attached. Returns parsed JSON or {'ok':False,...}."""
     node_id, secret = get_node_credentials()
@@ -148,6 +152,8 @@ def cinexis_addon_call(method, path, payload=None):
     lk = _read_cached_license_key()
     if lk:
         body["license_key"] = lk
+    if ADDON_VERSION:
+        body["addon_version"] = ADDON_VERSION
     if payload: body.update(payload)
     if method == "GET":
         qs = urllib.parse.urlencode(body)

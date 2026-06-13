@@ -1,3 +1,12 @@
+## [1.19.7] - 2026-06-12
+
+### Added — addon reports its version to the cloud (fleet visibility)
+
+- The addon now sends its running version to the cloud on each status poll, so
+  the admin customers list shows each node's addon version and flags any that
+  are behind the latest. No more guessing whether a fix reached a node. The
+  version is read from a single source (the entrypoint `CINEXIS_VERSION`).
+
 ## [1.19.6] - 2026-06-11
 
 ### Changed — changing billing cycle on your current plan is now obvious
