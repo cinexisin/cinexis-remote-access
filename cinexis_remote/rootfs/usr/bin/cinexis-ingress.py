@@ -1055,6 +1055,28 @@ def render_onboarding_wizard(base_path="/", error=""):
       <label>Email *</label>           <input name="email" type="email" required placeholder="you@example.com">
       <label>WhatsApp number</label>   <input name="phone" placeholder="+91 98765 43210">
       <label>City / Location</label>   <input name="location" placeholder="Mumbai, Maharashtra">
+      <label>State <span class="muted" style="font-weight:400">(for your GST invoice)</span></label>
+      <select name="state">
+        <option value="">— select your state —</option>
+        <option value="29">Karnataka</option><option value="33">Tamil Nadu</option>
+        <option value="27">Maharashtra</option><option value="36">Telangana</option>
+        <option value="32">Kerala</option><option value="37">Andhra Pradesh</option>
+        <option value="07">Delhi</option><option value="09">Uttar Pradesh</option>
+        <option value="24">Gujarat</option><option value="19">West Bengal</option>
+        <option value="23">Madhya Pradesh</option><option value="08">Rajasthan</option>
+        <option value="03">Punjab</option><option value="06">Haryana</option>
+        <option value="10">Bihar</option><option value="21">Odisha</option>
+        <option value="22">Chhattisgarh</option><option value="20">Jharkhand</option>
+        <option value="18">Assam</option><option value="30">Goa</option>
+        <option value="34">Puducherry</option><option value="02">Himachal Pradesh</option>
+        <option value="05">Uttarakhand</option><option value="04">Chandigarh</option>
+        <option value="01">Jammu &amp; Kashmir</option><option value="38">Ladakh</option>
+        <option value="11">Sikkim</option><option value="12">Arunachal Pradesh</option>
+        <option value="13">Nagaland</option><option value="14">Manipur</option>
+        <option value="15">Mizoram</option><option value="16">Tripura</option>
+        <option value="17">Meghalaya</option><option value="31">Lakshadweep</option>
+        <option value="35">Andaman &amp; Nicobar</option><option value="97">Other Territory</option>
+      </select>
       <label>GSTIN (optional)</label>  <input name="gstin" placeholder="22AAAAA0000A1Z5">
       <label>Use case</label>
       <select name="use_case">

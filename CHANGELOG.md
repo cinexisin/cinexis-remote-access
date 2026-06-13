@@ -1,3 +1,12 @@
+## [1.19.8] - 2026-06-12
+
+### Added — GST state on the onboarding wizard
+
+- The onboarding wizard now asks for your **State** (place of supply). This
+  makes your GST tax invoices correct automatically — intra-state (CGST+SGST)
+  for Karnataka, inter-state (IGST) elsewhere — instead of defaulting. Optional;
+  an admin can also set/correct it.
+
 ## [1.19.7] - 2026-06-12
 
 ### Added — addon reports its version to the cloud (fleet visibility)
