@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.19.11
+
+Clearer message when setup hasn't finished.
+
+The panel used to say your account was "waiting for admin approval" and would be activated
+"within 24 hours". Activation is automatic now, so that was misleading — if you saw that
+screen, nobody was coming to approve anything and there was no wait that would fix it. It now
+explains what's actually missing, what to do about it, and confirms your Home Assistant keeps
+working normally in the meantime.
+
 ## 1.19.10
 
 **Security — the WhatsApp pairing QR is now protected.**

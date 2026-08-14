@@ -427,18 +427,33 @@ async function cancelAutopay() {{
 """
 
 def render_pending_banner():
-    """Shown when license_status='pending_approval' — replaces the whole dashboard."""
+    """Shown when license_status='pending_approval' — replaces the whole dashboard.
+
+    Activation is AUTOMATIC now (the trial starts the moment onboarding completes,
+    and payment activates the tunnel with no human in the loop). So reaching this
+    screen means setup did not finish — not that a human is reviewing you. The old
+    copy promised "our team will activate within 24 hours / nothing for you to do",
+    which left the customer waiting for something that was never going to happen.
+    """
     return """
-<div class="card" style="text-align:center;padding:48px 24px">
-  <div style="font-size:3rem;margin-bottom:12px">⏳</div>
-  <h2 style="margin:0 0 8px">Waiting for admin approval</h2>
-  <p style="color:#94a3b8;max-width:480px;margin:0 auto 16px;line-height:1.5">
-    Your registration was received. Our team is reviewing your account
-    and will activate your trial within 24 hours. You'll get a WhatsApp
-    message the moment it's ready.
+<div class="card" style="padding:36px 28px;max-width:560px;margin:0 auto">
+  <h2 style="margin:0 0 10px">Setup isn't finished yet</h2>
+  <p style="color:#94a3b8;margin:0 0 16px;line-height:1.6">
+    This Home Assistant is registered, but there's no active plan on the account
+    yet — so remote access, voice and WhatsApp control aren't switched on.
   </p>
-  <p style="color:#64748b;font-size:.8rem">
-    Nothing for you to do here — this page refreshes every 15 seconds.
+  <p style="color:#cbd5e1;margin:0 0 8px;font-weight:600;font-size:.9rem">What to do</p>
+  <ol style="color:#94a3b8;margin:0 0 18px;padding-left:20px;line-height:1.7;font-size:.9rem">
+    <li>Reload this page and finish the setup steps, including choosing a plan.</li>
+    <li>If you've just paid, give it a minute — activation is automatic and this
+        page refreshes itself.</li>
+    <li>Still stuck? Email <a href="mailto:support@cinexis.cloud"
+        style="color:#f59e0b">support@cinexis.cloud</a> and mention your Home
+        Assistant name.</li>
+  </ol>
+  <p style="color:#64748b;font-size:.82rem;margin:0;padding-top:14px;border-top:1px solid #1e293b">
+    Your Home Assistant is unaffected — everything local keeps working normally.
+    Only Cinexis remote features are waiting.
   </p>
 </div>
 <script>setTimeout(function(){ location.reload(); }, 15000);</script>
