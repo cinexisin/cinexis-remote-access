@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.19.10
+
+**Security — the WhatsApp pairing QR is now protected.**
+
+The `/qr` endpoint on the WhatsApp service (published to your Home Assistant host
+on port 18083) required no authentication. Anyone on the same network could fetch
+the pairing QR, scan it, and link your WhatsApp account to their own device. It now
+requires the same shared secret as the send endpoints. The Cinexis panel is
+unaffected — it already authenticates.
+
+Also in this release: clearer guidance if the add-on can't start because port 18083
+is already in use (change it under Settings → Add-ons → Cinexis → Network).
+
 ## 1.19.9
 
 **Security — add-on private storage.**

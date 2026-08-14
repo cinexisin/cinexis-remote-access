@@ -167,11 +167,11 @@ app.use(express.json({ limit: '2mb' }));
 
 // Shared-secret guard for mutating / sending endpoints. We bind 0.0.0.0 so
 // HA Core can reach /notify, which means the port is reachable from the HA
-// host network — protect the dangerous verbs. Reads come through unguarded
-// (status/qr only expose pairing state, no send capability). The ingress
-// proxy and HA rest_command attach the secret via x-cinexis-secret or
-// ?secret=. If WA_SHARED_SECRET is unset (older entrypoint), guard is a
-// no-op so we don't break upgrades.
+// host network — protect the dangerous verbs AND /qr. /status stays open (it
+// reports connected/has_qr booleans only, no credential), but the QR itself is
+// a pairing credential and is guarded. The ingress proxy and HA rest_command
+// attach the secret via x-cinexis-secret or ?secret=. If WA_SHARED_SECRET is
+// unset (older entrypoint), guard is a no-op so we don't break upgrades.
 function requireSecret(req, res, next) {
   if (!SHARED_SECRET) return next();
   const provided = req.headers['x-cinexis-secret'] || req.query.secret || (req.body && req.body.secret);
@@ -191,7 +191,11 @@ app.get('/status', (_req, res) => {
   });
 });
 
-app.get('/qr', (_req, res) => {
+// GUARDED: the pairing QR *is* a credential. Port 18083 is published to the HA
+// host, so an unauthenticated /qr let anyone LAN-adjacent fetch the QR, scan it,
+// and link the owner's WhatsApp account to their own device. The ingress UI
+// reaches this through wa_service_call(), which attaches x-cinexis-secret.
+app.get('/qr', requireSecret, (_req, res) => {
   if (!currentQR) {
     return res.status(404).json({
       error: 'no_qr_available',

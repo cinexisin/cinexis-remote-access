@@ -163,11 +163,13 @@ customer could grep it from the image and claim another (offline) customer's
   auth token. The auth token stays the legacy shared token, so frps
   authenticates every client exactly as before. **Zero regression, no
   tunnel disruption.**
-- A new frps server plugin (`ops/frps-auth-plugin/`) validates the per-node
-  token and enforces that a node can only claim its own subdomain. Built to
-  fail open and ships in observe mode; deploy + cutover steps are in
-  `ops/frps-auth-plugin/README.md`. Verified in enforce mode: forged tokens
-  and subdomain squatting are rejected; valid + legacy clients pass.
+- An frps server plugin validates the per-node token and enforces that a node
+  can only claim its own subdomain. Built to fail open and shipped in observe
+  mode first. Verified in enforce mode: forged tokens and subdomain squatting
+  are rejected; valid + legacy clients pass.
+  *(Superseded: this validation now lives server-side in the cinexis-api
+  `/frp/handler` hook, which is what frps actually calls. The standalone
+  `ops/frps-auth-plugin/` copy was never deployed and has been removed.)*
 
 Companion cloud (deployed): `/p2p/register` + `/p2p/heartbeat` now return the
 per-node `frp_token`; signing secret self-bootstraps to a 0600 file.

@@ -1,6 +1,6 @@
 name: "Cinexis Remote Access"
 description: "Secure remote access and Alexa Smart Home for Home Assistant via Cinexis Cloud. No port forwarding required."
-version: "1.19.9"
+version: "1.19.10"
 slug: "cinexis_remote"
 init: false
 arch:
@@ -19,12 +19,14 @@ panel_title: Cinexis
 homeassistant_api: true
 hassio_api: true
 # Expose the WhatsApp Web service to the HA host so REST commands /
-# automations defined in HA's configuration.yaml can hit it. Port is
-# user-configurable in case 18083 collides with another addon.
+# automations defined in HA's configuration.yaml can hit it.
+# If 18083 is already taken, the add-on will FAIL TO START — change the host
+# port in Settings → Add-ons → Cinexis → Network (and update the port in your
+# rest_command URLs to match).
 ports:
   "18083/tcp": 18083
 ports_description:
-  "18083/tcp": "WhatsApp send endpoint — HA REST commands talk to this. See addon UI for snippet."
+  "18083/tcp": "WhatsApp send endpoint — HA REST commands talk to this. If the add-on fails to start, this host port is taken: change it here."
 map:
   - type: share
     read_only: false
