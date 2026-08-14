@@ -1,0 +1,15 @@
+# Changelog
+
+## 1.19.9
+
+**Security — add-on private storage.**
+
+Cinexis previously stored its node identity, licence key and WhatsApp session in
+`/share/cinexis`. Home Assistant maps `/share` into *every* add-on that requests
+share access, so another add-on installed on the same machine could read those
+files. Storage has moved to `/data/cinexis`, which is private to this add-on.
+
+Existing installs migrate automatically on first start: your files are **copied**
+(not moved) to the new location, so your node identity, remote-access address and
+paired WhatsApp session all stay exactly the same. Nothing to do on your side, and
+the old files are left in place so the update can be rolled back safely.
