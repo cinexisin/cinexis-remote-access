@@ -48,7 +48,7 @@ const pino    = require('pino');
 const fs      = require('fs');
 const path    = require('path');
 
-const AUTH_DIR = process.env.WA_AUTH_DIR || '/share/cinexis/wa-auth';
+const AUTH_DIR = process.env.WA_AUTH_DIR || '/data/cinexis/wa-auth';
 const PORT     = parseInt(process.env.WA_PORT || '18083', 10);
 
 // Quiet by default — Baileys is chatty at info level.
@@ -278,9 +278,9 @@ app.post('/test', requireSecret, async (req, res) => {
 //                  per-automation defaults are read from automation_recipient_map.json)
 //   }
 // Returns: { ok: true, sent: [{recipient, channel, ok, message_id?}], failed: [...] }
-const RECIPIENTS_FILE     = process.env.RECIPIENTS_FILE     || '/share/cinexis/recipients.json';
-const AUTOMATION_MAP_FILE = process.env.AUTOMATION_MAP_FILE || '/share/cinexis/automation_recipient_map.json';
-const TELEGRAM_CONFIG     = process.env.TELEGRAM_CONFIG_FILE || '/share/cinexis/telegram_config.json';
+const RECIPIENTS_FILE     = process.env.RECIPIENTS_FILE     || '/data/cinexis/recipients.json';
+const AUTOMATION_MAP_FILE = process.env.AUTOMATION_MAP_FILE || '/data/cinexis/automation_recipient_map.json';
+const TELEGRAM_CONFIG     = process.env.TELEGRAM_CONFIG_FILE || '/data/cinexis/telegram_config.json';
 
 function loadJsonSafe(file, fallback) {
   try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch (_) { return fallback; }

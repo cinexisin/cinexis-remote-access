@@ -6,7 +6,11 @@ API="${CINEXIS_API:-https://api1.cinexis.cloud}"
 FRPS_HOST="${FRPS_HOST:-frp1.cinexis.cloud}"
 FRPS_PORT="${FRPS_PORT:-7000}"
 FRP_TOKEN="${FRP_TOKEN:-cinexis-frp-secret-2024}"
-STORAGE_DIR="/share/cinexis"
+# Add-on-PRIVATE storage. Previously /share/cinexis, which HA bind-mounts into
+# every add-on that requests share access — so any other add-on could read the
+# device_secret / license / WhatsApp session. /data is private to this add-on.
+STORAGE_DIR="/data/cinexis"
+LEGACY_STORAGE_DIR="/share/cinexis"
 NODE_ID_FILE="${STORAGE_DIR}/node_id"
 SECRET_FILE="${STORAGE_DIR}/device_secret"
 SHORT_ID_FILE="${STORAGE_DIR}/short_id"
@@ -14,7 +18,7 @@ FRPC_CONFIG="${STORAGE_DIR}/frpc.toml"
 FRP_TOKEN_FILE="${STORAGE_DIR}/frp_token"   # per-node tunnel token from cloud
 HEARTBEAT_INTERVAL=300
 LOG_PREFIX="[Cinexis]"
-export CINEXIS_VERSION="1.19.8"   # single source: startup banner + addon_version reported to cloud
+export CINEXIS_VERSION="1.19.9"   # single source: startup banner + addon_version reported to cloud
 NAME_PREFIX="${NAME_PREFIX:-}"
 LICENSE_KEY_FILE="${STORAGE_DIR}/license_key"
 LICENSE_KEY=""
@@ -46,6 +50,15 @@ err()  { echo "${LOG_PREFIX} ❌ $*"; }
 # ── Storage ────────────────────────────────────────────────────────────────────
 ensure_storage() {
     mkdir -p "${STORAGE_DIR}"
+    # One-time migration of existing installs from the world-shared
+    # /share/cinexis to the private /data/cinexis. COPY (never move) so a
+    # rollback still finds the old files, and only when /data has no identity
+    # yet but /share does — this preserves node_id + device_secret (and thus the
+    # tunnel subdomain), so an existing customer's tunnel identity is unchanged.
+    if [ ! -s "${STORAGE_DIR}/node_id" ] && [ -s "${LEGACY_STORAGE_DIR}/node_id" ]; then
+        log "Migrating stored identity ${LEGACY_STORAGE_DIR} → ${STORAGE_DIR} (private)"
+        cp -a "${LEGACY_STORAGE_DIR}/." "${STORAGE_DIR}/" 2>/dev/null || true
+    fi
 }
 
 # ── Node identity ──────────────────────────────────────────────────────────────

@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 # ── Config ────────────────────────────────────────────────────────────────────
 PORT              = int(os.environ.get("INGRESS_PORT", "18082"))
 WA_SERVICE_URL    = os.environ.get("WA_SERVICE_URL", "http://127.0.0.1:18083")
-STORAGE_DIR       = "/share/cinexis"
+STORAGE_DIR       = "/data/cinexis"
 LICENSE_KEY_FILE  = f"{STORAGE_DIR}/license_key"
 EXCLUSIONS_FILE   = f"{STORAGE_DIR}/voice_exclusions.json"
 NODE_ID_FILE      = f"{STORAGE_DIR}/node_id"

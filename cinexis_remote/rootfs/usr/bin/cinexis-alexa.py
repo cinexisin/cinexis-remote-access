@@ -24,8 +24,8 @@ from datetime import datetime, timezone
 PORT          = int(os.environ.get("ALEXA_HANDLER_PORT", "18081"))
 SUPERVISOR_TOKEN = os.environ.get("SUPERVISOR_TOKEN", "")
 HA_BASE       = "http://supervisor/core"
-SECRET_PATHS  = ["/share/cinexis/device_secret", "/data/device_secret"]
-EXCLUSIONS_FILE = "/share/cinexis/voice_exclusions.json"
+SECRET_PATHS  = ["/data/cinexis/device_secret", "/share/cinexis/device_secret", "/data/device_secret"]
+EXCLUSIONS_FILE = "/data/cinexis/voice_exclusions.json"
 DISCOVERY_CAP = 300
 
 SUPPORTED_DOMAINS = {

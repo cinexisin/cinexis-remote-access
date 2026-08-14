@@ -32,7 +32,7 @@ except ImportError:
     raise SystemExit(0)
 
 # ── Config ────────────────────────────────────────────────────────────────────
-STORAGE_DIR        = "/share/cinexis"
+STORAGE_DIR        = "/data/cinexis"
 RULES_FILE         = f"{STORAGE_DIR}/notification_rules.json"
 LAST_FIRED_FILE    = f"{STORAGE_DIR}/notification_rules_last_fired.json"
 DAILY_FILE         = f"{STORAGE_DIR}/daily_summary.json"
