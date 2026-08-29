@@ -1,3 +1,22 @@
+## [1.20.0] - 2026-08-29
+
+### Fixed
+- **Node identity is now a ULID.** The cloud retired the previous UUID identity
+  generation: `/p2p/register` answers `403 retired_identity_generation` for a UUID
+  and `403 malformed_identity` for anything that is not a 26-character Crockford
+  base32 ULID. Installs carrying an old identity could reach the tunnel server but
+  never authenticate — the symptom was a repeating
+  `register control error: cinexis: unknown node`, then `bad-token`, with the add-on
+  looping `connect to server error` and Home Assistant showing "Your home isn't
+  connected".
+- **Existing installs migrate automatically.** `ensure_node_id` previously minted an
+  identity only when the file was *absent*, so an update alone would have left every
+  existing home on its old UUID. It now validates the stored value: a retired identity
+  is moved to `node_id.retired` (kept for support) and a fresh ULID is minted.
+- **The stale tunnel token is cleared on migration.** `frp_token` is
+  `HMAC(server-secret, node_id)`, so it is worthless under a new identity. Removing it
+  forces a clean re-registration instead of a confusing `bad-token` rejection.
+
 ## [1.19.8] - 2026-06-12
 
 ### Added — GST state on the onboarding wizard

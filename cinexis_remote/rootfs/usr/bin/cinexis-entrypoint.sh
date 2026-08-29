@@ -65,14 +65,63 @@ ensure_storage() {
 # NOTE: Use `-s` (file exists AND non-empty) rather than `-f` (file exists).
 # A truncated/zero-byte file from an interrupted previous write would otherwise
 # be read as an empty string and cause the API to return 400 "missing fields".
+# A node identity must be a ULID: 26 characters of Crockford base32. The cloud
+# retired the previous UUID generation — /p2p/register answers
+# 403 retired_identity_generation for a UUID and 403 malformed_identity for
+# anything that is not a ULID. An install carrying an old identity can therefore
+# never authenticate its tunnel, however healthy the rest of its config is.
+is_ulid() {
+    [ "${#1}" -eq 26 ] || return 1
+    case "$1" in
+        *[!0123456789ABCDEFGHJKMNPQRSTVWXYZ]*) return 1 ;;
+    esac
+    return 0
+}
+
+# Real ULID: 48-bit millisecond timestamp then 80 bits of randomness, so ids
+# sort by creation time. python3 ships in this image (the ingress UI is python);
+# the /dev/urandom fallback is not time-ordered but is still a valid ULID shape.
+new_ulid() {
+    python3 - <<'PYULID' 2>/dev/null
+import os, time
+A = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+n = (int(time.time() * 1000) << 80) | int.from_bytes(os.urandom(10), "big")
+print("".join(A[(n >> (5 * i)) & 31] for i in range(25, -1, -1)))
+PYULID
+}
+
 ensure_node_id() {
-    if [ ! -s "${NODE_ID_FILE}" ]; then
-        local uuid
-        uuid=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || \
-               openssl rand -hex 16 | sed 's/\(.\{8\}\)\(.\{4\}\)\(.\{4\}\)\(.\{4\}\)\(.\{12\}\)/\1-\2-\3-\4-\5/')
-        if [ -z "${uuid}" ]; then err "Failed to generate node UUID — /proc and openssl both unavailable" >&2; exit 1; fi
-        echo "${uuid}" > "${NODE_ID_FILE}"
+    # Migrate an identity from the retired generation. Only minting when the file
+    # is ABSENT would leave every existing install stuck on its old UUID after an
+    # update, so the stored value is validated, not just its presence.
+    if [ -s "${NODE_ID_FILE}" ]; then
+        NODE_ID=$(cat "${NODE_ID_FILE}")
+        if ! is_ulid "${NODE_ID}"; then
+            warn "Node identity is from a retired generation — minting a new one"
+            log  "  previous identity kept at ${NODE_ID_FILE}.retired for support"
+            echo "${NODE_ID}" > "${NODE_ID_FILE}.retired" 2>/dev/null || true
+            rm -f "${NODE_ID_FILE}"
+            # The tunnel token is HMAC(server-secret, node_id): tied to the old
+            # identity and worthless under the new one. Clearing it forces a
+            # clean re-registration instead of a confusing bad-token rejection.
+            rm -f "${FRP_TOKEN_FILE}"
+        fi
     fi
+
+    if [ ! -s "${NODE_ID_FILE}" ]; then
+        local ulid
+        ulid=$(new_ulid)
+        if ! is_ulid "${ulid}"; then
+            ulid=$(LC_ALL=C tr -dc '0123456789ABCDEFGHJKMNPQRSTVWXYZ' < /dev/urandom 2>/dev/null | head -c 26)
+        fi
+        if ! is_ulid "${ulid}"; then
+            err "Failed to generate a node identity — python3 and /dev/urandom both unavailable" >&2
+            exit 1
+        fi
+        echo "${ulid}" > "${NODE_ID_FILE}"
+        log "Minted node identity ${ulid}"
+    fi
+
     NODE_ID=$(cat "${NODE_ID_FILE}")
     if [ -z "${NODE_ID}" ]; then err "node_id file empty after write — check ${STORAGE_DIR} permissions" >&2; exit 1; fi
 }
