@@ -294,25 +294,23 @@ wait_for_approval() {
 write_frpc_config() {
     # Per-node tunnel token (HMAC issued by the cloud at registration).
     #
-    # It goes in [auth] token, NOT only in metadata. frp derives the login
-    # privilege_key from the [auth] token as md5(token + timestamp), and the
-    # cinexis-authz plugin — now in enforce mode — verifies exactly that against
-    # HMAC(secret, node_id + ":" + generation). Sending the legacy shared token
-    # here made every login fail with "cinexis: invalid tunnel token" while the
-    # per-node token sat unread in metadata.
+    # The per-node token is sent as METADATA, and the shared FRP_TOKEN stays in
+    # [auth]. 1.20.1 briefly put the per-node token in [auth] instead; that made
+    # the plugin accept the login, but frps ALSO checks privilege_key against its
+    # own single configured token — a check frp gives no way to disable — so every
+    # client presenting a different key was refused. Working around it by having
+    # the plugin rewrite privilege_key made frps 0.61.1 clients drop the control
+    # connection right after a successful login, and no proxy ever registered.
     #
-    # It is still ALSO sent as metadata: the plugin reads node_id from there to
-    # know which node's token to expect, and older clouds ignore it harmlessly.
-    #
-    # The shared FRP_TOKEN remains the fallback for a cloud old enough not to
-    # issue per-node tokens, so a downgrade does not strand the tunnel.
+    # So the shared token satisfies frp's built-in layer and nothing more; the
+    # plugin verifies the per-node token from metadata, which is the real
+    # credential. This is what the original design intended.
     local node_token=""
     [ -s "${FRP_TOKEN_FILE}" ] && node_token=$(cat "${FRP_TOKEN_FILE}" 2>/dev/null | tr -d '[:space:]')
-    local auth_token="${node_token:-${FRP_TOKEN}}"
     if [ -n "${node_token}" ]; then
-        log "Tunnel auth: per-node token"
+        log "Tunnel auth: per-node token (sent as metadata)"
     else
-        warn "Tunnel auth: falling back to the shared token — the cloud issued no per-node token"
+        warn "Tunnel auth: no per-node token issued — the plugin will refuse this login"
     fi
     cat > "${FRPC_CONFIG}" << FRPCEOF
 serverAddr = "${FRPS_HOST}"
@@ -320,7 +318,7 @@ serverPort = ${FRPS_PORT}
 
 [auth]
 method = "token"
-token = "${auth_token}"
+token = "${FRP_TOKEN}"
 
 [metadatas]
 node_id = "${NODE_ID}"

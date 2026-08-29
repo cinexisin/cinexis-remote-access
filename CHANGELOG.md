@@ -1,3 +1,21 @@
+## [1.20.2] - 2026-08-29
+
+### Fixed
+- **Reverted 1.20.1's `[auth]` change; the per-node token belongs in metadata.**
+  1.20.1 moved the per-node token into frpc's `[auth]` block. The plugin accepted
+  those logins, but frps *also* verifies `privilege_key` against its own single
+  configured token, and frp offers no way to disable that layer — so every client
+  presenting a different key was refused. Making the plugin rewrite
+  `privilege_key` to compensate caused frps 0.61.1 clients to tear down the
+  control connection immediately after a successful login: `client login info`,
+  `client exit success`, `Accept new mux stream error: EOF`, and no proxy ever
+  registered.
+  The shared `FRP_TOKEN` is back in `[auth]`, where it does nothing but satisfy
+  frp's built-in layer, and the per-node token stays in `[metadatas]` where the
+  plugin verifies it. That per-node token remains the real credential; this is
+  what the original design intended. Requires the matching cloud-side plugin,
+  which now checks `metas.node_token`.
+
 ## [1.20.1] - 2026-08-29
 
 ### Fixed
