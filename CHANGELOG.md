@@ -1,3 +1,18 @@
+## [1.20.1] - 2026-08-29
+
+### Fixed
+- **Tunnel login now uses the per-node token.** The cloud issues a per-node FRP
+  token at registration, but it was only ever written to frpc `[metadatas]`,
+  while `[auth] token` kept the legacy shared value. That was correct while the
+  `cinexis-authz` plugin was passive; it is now in enforce mode and verifies
+  frp's `privilege_key` — `md5(auth_token + timestamp)` — against
+  `HMAC(secret, node_id + ":" + generation)`. With the shared token in `[auth]`
+  every login failed with `cinexis: invalid tunnel token`, and because frpc runs
+  with `loginFailExit` the add-on shut down instead of retrying.
+  The per-node token is still sent as metadata as well, since the plugin reads
+  `node_id` from there. The shared token remains the fallback for a cloud old
+  enough not to issue per-node tokens, so a downgrade does not strand the tunnel.
+
 ## [1.20.0] - 2026-08-29
 
 ### Fixed

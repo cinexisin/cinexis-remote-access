@@ -292,21 +292,35 @@ wait_for_approval() {
 
 # ── Write frpc config ──────────────────────────────────────────────────────────
 write_frpc_config() {
-    # Per-node tunnel token (HMAC issued by the cloud at registration). Sent as
-    # frpc METADATA — NOT as the auth token — so frps's existing token-method
-    # auth keeps working unchanged (zero regression). A future frps login plugin
-    # validates node_token == HMAC(secret, node_id) and that this node owns the
-    # subdomain, closing the shared-token squatting hole. Until that plugin is
-    # in enforce mode, this metadata is simply ignored by frps.
+    # Per-node tunnel token (HMAC issued by the cloud at registration).
+    #
+    # It goes in [auth] token, NOT only in metadata. frp derives the login
+    # privilege_key from the [auth] token as md5(token + timestamp), and the
+    # cinexis-authz plugin — now in enforce mode — verifies exactly that against
+    # HMAC(secret, node_id + ":" + generation). Sending the legacy shared token
+    # here made every login fail with "cinexis: invalid tunnel token" while the
+    # per-node token sat unread in metadata.
+    #
+    # It is still ALSO sent as metadata: the plugin reads node_id from there to
+    # know which node's token to expect, and older clouds ignore it harmlessly.
+    #
+    # The shared FRP_TOKEN remains the fallback for a cloud old enough not to
+    # issue per-node tokens, so a downgrade does not strand the tunnel.
     local node_token=""
     [ -s "${FRP_TOKEN_FILE}" ] && node_token=$(cat "${FRP_TOKEN_FILE}" 2>/dev/null | tr -d '[:space:]')
+    local auth_token="${node_token:-${FRP_TOKEN}}"
+    if [ -n "${node_token}" ]; then
+        log "Tunnel auth: per-node token"
+    else
+        warn "Tunnel auth: falling back to the shared token — the cloud issued no per-node token"
+    fi
     cat > "${FRPC_CONFIG}" << FRPCEOF
 serverAddr = "${FRPS_HOST}"
 serverPort = ${FRPS_PORT}
 
 [auth]
 method = "token"
-token = "${FRP_TOKEN}"
+token = "${auth_token}"
 
 [metadatas]
 node_id = "${NODE_ID}"
